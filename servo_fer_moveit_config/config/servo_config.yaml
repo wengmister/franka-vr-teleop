@@ -1,0 +1,61 @@
+moveit_servo:
+  # MoveIt group
+  move_group_name: "fer_arm"  # This must match your MoveIt group name!
+  
+  # Planning frame
+  planning_frame: "fer_link0"  # Base link of your robot
+  
+  # EE frame - optional
+  ee_frame_name: "fer_link8"  # End-effector frame
+  
+  # Command interface
+  command_in_type: "unitless"  # "unitless"> in the range [-1:1], as if from joystick
+  scale:
+    linear:  0.15  # Increased from 0.2
+    rotational:  0.15  # Increased from 0.2
+    joint:  0.10 # Slightly increased
+  
+  # Publishing Properties
+  publish_period: 0.01  # Faster: 100 Hz (was 0.02 / 50Hz)
+  low_pass_filter_coeff: 1.5  # Moderate filtering (was 1.0, default is often 2.0)
+  
+  # Stopping behavior
+  incoming_command_timeout:  0.8  # Slightly reduced from 1.0, as we expect faster commands
+  num_outgoing_halt_msgs_to_publish: 4  # Number of halt messages to publish on a halt
+  
+  # Singularity and joint limit handling
+  lower_singularity_threshold:  17.0  # Start decelerating when the condition number hits this
+  hard_stop_singularity_threshold: 30.0  # Stop when the condition number hits this
+  joint_limit_margin: 0.15 # Slightly reduced from 0.2
+  
+  # Topic names (updated for pose commands)
+  cartesian_command_in_topic: "~/delta_twist_cmds"
+  joint_command_in_topic: "~/delta_joint_cmds" 
+  pose_command_in_topic: "~/pose_target"  # New topic for pose targets
+  joint_topic: "/joint_state_broadcaster/joint_states"
+  status_topic: "~/status"
+  
+  # Output parameters
+  command_out_topic: "/fer_arm_controller/joint_trajectory"
+  command_out_type: "trajectory_msgs/JointTrajectory"
+  publish_joint_positions: true
+  publish_joint_velocities: true
+  publish_joint_accelerations: false
+  
+  # Ensure zero velocity at end of trajectories - critical settings
+  publish_trajectory_with_end_velocities_zero: true
+  # Add more time padding to ensure zero velocities can be achieved
+  trajectory_duration_extension: 0.5 # Was 0.3, increasing to give more time to decelerate
+  
+  # Add explicit setting for the zero velocity threshold
+  override_velocity_scaling_factor: 0.6  # Was 0.85, reducing to ensure smoother motion
+  
+  # Collision checking
+  check_collisions: true
+  collision_check_rate: 10.0  # Increased from 1.0Hz to a more reasonable 10Hz
+  self_collision_proximity_threshold: 0.01
+  scene_collision_proximity_threshold: 0.02
+  
+  # Smoothing settings
+  use_smoothing: true
+  # low_pass_filter_coeff is already defined above under Publishing Properties

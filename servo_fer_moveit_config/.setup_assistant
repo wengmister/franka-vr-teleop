@@ -1,0 +1,6 @@
+moveit_setup_assistant_config:
+  urdf:
+    package: servo_fer_moveit_config
+    relative_path: urdf/servo_fer_description.xacro
+  srdf:
+    relative_path: srdf/fer_arm.srdf.xacro
