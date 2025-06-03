@@ -22,8 +22,8 @@ class VRToRobotConverter(Node):
         self.declare_parameter('vr_udp_port', 9999)
         self.declare_parameter('robot_udp_ip', '192.168.18.1')
         self.declare_parameter('robot_udp_port', 8888)
-        self.declare_parameter('pose_scale', 0.5)  # Much smaller default scale
-        self.declare_parameter('orientation_scale', 0.5)  # Smaller orientation scale too
+        self.declare_parameter('pose_scale', 1.0)  # Back to 1.0 default scale
+        self.declare_parameter('orientation_scale', 1.0)  # Back to 1.0 orientation scale
         self.declare_parameter('smoothing_factor', 0.8)  # Smoothing for VR data
         self.declare_parameter('control_rate', 50.0)  # Hz
         self.declare_parameter('position_deadzone', 0.01)  # 1cm deadzone for position
@@ -219,11 +219,11 @@ class VRToRobotConverter(Node):
                 )
                 
                 # Also log the actual velocities being sent to robot
-                velocity_scale = 0.1
+                velocity_scale = 0.5  # Updated to match the actual scale
                 test_linear_vel = self.smoothed_position * velocity_scale
                 test_angular_vel = smoothed_orient_delta * velocity_scale
-                test_linear_vel = np.clip(test_linear_vel, -0.02, 0.02)
-                test_angular_vel = np.clip(test_angular_vel, -0.02, 0.02)
+                test_linear_vel = np.clip(test_linear_vel, -0.05, 0.05)  # Updated limits
+                test_angular_vel = np.clip(test_angular_vel, -0.05, 0.05)
                 
                 self.get_logger().info(
                     f'Velocities sent: lin=[{test_linear_vel[0]:.4f}, {test_linear_vel[1]:.4f}, {test_linear_vel[2]:.4f}], '
@@ -240,9 +240,9 @@ class VRToRobotConverter(Node):
             # The key is to send SMALL velocities, not large pose deltas
             
             # Scale down the deltas significantly for velocity control
-            velocity_scale = 0.1  # Much smaller velocities
-            max_linear_vel = 0.02   # 2cm/s max
-            max_angular_vel = 0.02  # 0.02 rad/s max
+            velocity_scale = 0.5  # Increased from 0.1 to 0.5 for more visible movement
+            max_linear_vel = 0.05   # Increased to 5cm/s max
+            max_angular_vel = 0.05  # Increased to 0.05 rad/s max
             
             # Apply velocity scaling and limits
             linear_vel = position_delta * velocity_scale
