@@ -33,7 +33,7 @@ def generate_launch_description():
     
     pose_scale_arg = DeclareLaunchArgument(
         'pose_scale',
-        default_value='2.0',
+        default_value='0.5',
         description='Scale factor for VR hand movements'
     )
     

@@ -22,8 +22,8 @@ class VRToRobotConverter(Node):
         self.declare_parameter('vr_udp_port', 9999)
         self.declare_parameter('robot_udp_ip', '192.168.18.1')
         self.declare_parameter('robot_udp_port', 8888)
-        self.declare_parameter('pose_scale', 2.0)  # Scale factor for VR movements
-        self.declare_parameter('orientation_scale', 1.0)  # Scale factor for VR rotations
+        self.declare_parameter('pose_scale', 0.5)  # Much smaller default scale
+        self.declare_parameter('orientation_scale', 0.5)  # Smaller orientation scale too
         self.declare_parameter('smoothing_factor', 0.8)  # Smoothing for VR data
         self.declare_parameter('control_rate', 50.0)  # Hz
         self.declare_parameter('position_deadzone', 0.01)  # 1cm deadzone for position
@@ -218,16 +218,39 @@ class VRToRobotConverter(Node):
                     f'orient_delta=[{smoothed_orient_delta[0]:.3f}, {smoothed_orient_delta[1]:.3f}, {smoothed_orient_delta[2]:.3f}]'
                 )
                 
+                # Also log the actual velocities being sent to robot
+                velocity_scale = 0.1
+                test_linear_vel = self.smoothed_position * velocity_scale
+                test_angular_vel = smoothed_orient_delta * velocity_scale
+                test_linear_vel = np.clip(test_linear_vel, -0.02, 0.02)
+                test_angular_vel = np.clip(test_angular_vel, -0.02, 0.02)
+                
+                self.get_logger().info(
+                    f'Velocities sent: lin=[{test_linear_vel[0]:.4f}, {test_linear_vel[1]:.4f}, {test_linear_vel[2]:.4f}], '
+                    f'ang=[{test_angular_vel[0]:.4f}, {test_angular_vel[1]:.4f}, {test_angular_vel[2]:.4f}]'
+                )
+                
         except Exception as e:
             self.get_logger().error(f'Error in control loop: {str(e)}')
     
     def send_robot_command(self, position_delta, orientation_delta):
         """Send pose command to robot via UDP"""
         try:
-            # Convert to velocity-like commands (delta per time step)
-            dt = 1.0 / self.control_rate
-            linear_vel = position_delta / dt
-            angular_vel = orientation_delta / dt
+            # Convert pose deltas to reasonable velocity commands
+            # The key is to send SMALL velocities, not large pose deltas
+            
+            # Scale down the deltas significantly for velocity control
+            velocity_scale = 0.1  # Much smaller velocities
+            max_linear_vel = 0.02   # 2cm/s max
+            max_angular_vel = 0.02  # 0.02 rad/s max
+            
+            # Apply velocity scaling and limits
+            linear_vel = position_delta * velocity_scale
+            angular_vel = orientation_delta * velocity_scale
+            
+            # Clamp to maximum velocities
+            linear_vel = np.clip(linear_vel, -max_linear_vel, max_linear_vel)
+            angular_vel = np.clip(angular_vel, -max_angular_vel, max_angular_vel)
             
             # Create UDP message in format expected by robot
             # "linear_x linear_y linear_z angular_x angular_y angular_z emergency_stop reset_pose"
