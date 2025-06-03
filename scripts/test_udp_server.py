@@ -6,7 +6,7 @@ import sys
 import time
 
 class FakeRobotController:
-    def __init__(self, port=8888):
+    def __init__(self, port=9000):
         self.port = port
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(('', port))
@@ -72,7 +72,7 @@ class FakeRobotController:
             self.sock.close()
 
 if __name__ == '__main__':
-    port = 8888
+    port = 9000
     if len(sys.argv) > 1:
         port = int(sys.argv[1])
         
