@@ -45,7 +45,7 @@ def generate_launch_description():
     
     # VR to Robot converter node
     vr_converter_node = Node(
-        package='vr_franka_control',
+        package='franka_vr_teleop',
         executable='vr_to_robot_converter',
         name='vr_to_robot_converter',
         parameters=[{

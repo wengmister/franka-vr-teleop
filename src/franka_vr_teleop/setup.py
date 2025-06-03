@@ -24,7 +24,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'vr_to_robot_converter = vr_franka_control.vr_to_robot_converter:main',
+            'vr_to_robot_converter = franka_vr_teleop.vr_to_robot_converter:main',
         ],
     },
 )

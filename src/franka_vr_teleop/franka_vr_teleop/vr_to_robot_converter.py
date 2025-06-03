@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# vr_to_robot_converter.py - Convert VR wrist tracking to robot EE commands
 
 import rclpy
 from rclpy.node import Node
@@ -47,7 +48,7 @@ class VRToRobotConverter(Node):
         
         # Smoothing
         self.smoothed_position = np.array([0.0, 0.0, 0.0])
-        self.smoothed_orientation = np.array([0.0, 0.0, 0.0, 1.0])  # quaternion
+        self.smoothed_orientation = np.array([0.0, 0.0, 0.0])  # axis-angle representation
         
         # VR UDP pattern matching
         self.wrist_pattern = re.compile(r'Right wrist:, ([-\d\.]+), ([-\d\.]+), ([-\d\.]+), ([-\d\.]+), ([-\d\.]+), ([-\d\.]+), ([-\d\.]+)')
@@ -174,9 +175,12 @@ class VRToRobotConverter(Node):
             self.smoothed_position = (self.smoothing_factor * self.smoothed_position + 
                                     (1 - self.smoothing_factor) * scaled_pos_delta)
             
-            # For orientation, smooth in axis-angle space then convert back
-            smoothed_orient_delta = (self.smoothing_factor * self.smoothed_orientation[:3] + 
+            # For orientation, smooth in axis-angle space
+            smoothed_orient_delta = (self.smoothing_factor * self.smoothed_orientation + 
                                    (1 - self.smoothing_factor) * scaled_orient_delta)
+            
+            # Update the stored smoothed orientation
+            self.smoothed_orientation = smoothed_orient_delta
             
             # Send robot command
             self.send_robot_command(self.smoothed_position, smoothed_orient_delta)
@@ -219,14 +223,15 @@ class VRToRobotConverter(Node):
         pose_msg.header.stamp = self.get_clock().now().to_msg()
         pose_msg.header.frame_id = "vr_tracking"
         
-        pose_msg.pose.position.x = position[0]
-        pose_msg.pose.position.y = position[1]
-        pose_msg.pose.position.z = position[2]
+        # Ensure all values are Python floats, not numpy types
+        pose_msg.pose.position.x = float(position[0])
+        pose_msg.pose.position.y = float(position[1])
+        pose_msg.pose.position.z = float(position[2])
         
-        pose_msg.pose.orientation.x = orientation[0]
-        pose_msg.pose.orientation.y = orientation[1]
-        pose_msg.pose.orientation.z = orientation[2]
-        pose_msg.pose.orientation.w = orientation[3]
+        pose_msg.pose.orientation.x = float(orientation[0])
+        pose_msg.pose.orientation.y = float(orientation[1])
+        pose_msg.pose.orientation.z = float(orientation[2])
+        pose_msg.pose.orientation.w = float(orientation[3])
         
         self.vr_pose_pub.publish(pose_msg)
     
@@ -236,9 +241,10 @@ class VRToRobotConverter(Node):
         pose_msg.header.stamp = self.get_clock().now().to_msg()
         pose_msg.header.frame_id = "robot_target"
         
-        pose_msg.pose.position.x = position_delta[0]
-        pose_msg.pose.position.y = position_delta[1]
-        pose_msg.pose.position.z = position_delta[2]
+        # Ensure all values are Python floats
+        pose_msg.pose.position.x = float(position_delta[0])
+        pose_msg.pose.position.y = float(position_delta[1])
+        pose_msg.pose.position.z = float(position_delta[2])
         
         # Convert axis-angle to quaternion for visualization
         if np.linalg.norm(orientation_delta) > 1e-6:
@@ -247,10 +253,10 @@ class VRToRobotConverter(Node):
         else:
             target_quat = np.array([0, 0, 0, 1])
         
-        pose_msg.pose.orientation.x = target_quat[0]
-        pose_msg.pose.orientation.y = target_quat[1]
-        pose_msg.pose.orientation.z = target_quat[2]
-        pose_msg.pose.orientation.w = target_quat[3]
+        pose_msg.pose.orientation.x = float(target_quat[0])
+        pose_msg.pose.orientation.y = float(target_quat[1])
+        pose_msg.pose.orientation.z = float(target_quat[2])
+        pose_msg.pose.orientation.w = float(target_quat[3])
         
         self.robot_target_pub.publish(pose_msg)
 
