@@ -26,6 +26,8 @@ class VRToRobotConverter(Node):
         self.declare_parameter('orientation_scale', 1.0)  # Scale factor for VR rotations
         self.declare_parameter('smoothing_factor', 0.8)  # Smoothing for VR data
         self.declare_parameter('control_rate', 50.0)  # Hz
+        self.declare_parameter('position_deadzone', 0.01)  # 1cm deadzone for position
+        self.declare_parameter('orientation_deadzone', 0.05)  # 0.05 rad (~3°) deadzone for orientation
         
         # Get parameters
         self.vr_udp_ip = self.get_parameter('vr_udp_ip').value
@@ -36,6 +38,8 @@ class VRToRobotConverter(Node):
         self.orientation_scale = self.get_parameter('orientation_scale').value
         self.smoothing_factor = self.get_parameter('smoothing_factor').value
         self.control_rate = self.get_parameter('control_rate').value
+        self.position_deadzone = self.get_parameter('position_deadzone').value
+        self.orientation_deadzone = self.get_parameter('orientation_deadzone').value
         
         # VR wrist tracking state
         self.current_vr_pose = None
@@ -136,6 +140,19 @@ class VRToRobotConverter(Node):
         except Exception as e:
             self.get_logger().error(f'Error parsing VR message: {str(e)}')
     
+    def apply_deadzone(self, values, deadzone):
+        """Apply deadzone to a vector - zero out values below threshold"""
+        if isinstance(values, np.ndarray):
+            result = values.copy()
+            # Apply deadzone per component
+            for i in range(len(result)):
+                if abs(result[i]) < deadzone:
+                    result[i] = 0.0
+            return result
+        else:
+            # Single value
+            return 0.0 if abs(values) < deadzone else values
+    
     def transform_quaternion_vr_to_robot(self, vr_quat):
         """Transform quaternion from VR coordinate system to robot coordinate system"""
         # Create rotation from VR quaternion
@@ -161,11 +178,17 @@ class VRToRobotConverter(Node):
             # Calculate pose difference from initial VR pose
             vr_pos_delta = self.current_vr_pose['position'] - self.initial_vr_pose['position']
             
+            # Apply deadzone to position delta
+            vr_pos_delta = self.apply_deadzone(vr_pos_delta, self.position_deadzone)
+            
             # Calculate orientation difference
             initial_rot = Rotation.from_quat(self.initial_vr_pose['orientation'])
             current_rot = Rotation.from_quat(self.current_vr_pose['orientation'])
             relative_rot = current_rot * initial_rot.inv()
             orientation_delta = relative_rot.as_rotvec()
+            
+            # Apply deadzone to orientation delta
+            orientation_delta = self.apply_deadzone(orientation_delta, self.orientation_deadzone)
             
             # Scale the movements
             scaled_pos_delta = vr_pos_delta * self.pose_scale

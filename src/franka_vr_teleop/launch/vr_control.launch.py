@@ -43,6 +43,18 @@ def generate_launch_description():
         description='Scale factor for VR hand rotations'
     )
     
+    position_deadzone_arg = DeclareLaunchArgument(
+        'position_deadzone',
+        default_value='0.01',
+        description='Deadzone for VR hand position (meters)'
+    )
+    
+    orientation_deadzone_arg = DeclareLaunchArgument(
+        'orientation_deadzone',
+        default_value='0.05',
+        description='Deadzone for VR hand orientation (radians)'
+    )
+    
     # VR to Robot converter node
     vr_converter_node = Node(
         package='franka_vr_teleop',
@@ -55,6 +67,8 @@ def generate_launch_description():
             'robot_udp_port': LaunchConfiguration('robot_udp_port'),
             'pose_scale': LaunchConfiguration('pose_scale'),
             'orientation_scale': LaunchConfiguration('orientation_scale'),
+            'position_deadzone': LaunchConfiguration('position_deadzone'),
+            'orientation_deadzone': LaunchConfiguration('orientation_deadzone'),
             'smoothing_factor': 0.8,
             'control_rate': 50.0,
         }],
@@ -68,5 +82,7 @@ def generate_launch_description():
         robot_udp_port_arg,
         pose_scale_arg,
         orientation_scale_arg,
+        position_deadzone_arg,
+        orientation_deadzone_arg,
         vr_converter_node,
     ])

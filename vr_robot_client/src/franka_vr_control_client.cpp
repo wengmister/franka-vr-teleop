@@ -40,9 +40,9 @@ private:
     const int PORT = 8888;
     
     // Movement limits - more conservative for VR control
-    const double MAX_LINEAR_VEL = 0.03;   // 3cm/s max
-    const double MAX_ANGULAR_VEL = 0.03;  // 0.03 rad/s max
-    const double POSE_SMOOTHING = 0.05;   // Very aggressive smoothing for pose control
+    const double MAX_LINEAR_VEL = 0.02;   // 3cm/s max
+    const double MAX_ANGULAR_VEL = 0.02;  // 0.03 rad/s max
+    const double POSE_SMOOTHING = 0.1;   // Very aggressive smoothing for pose control
     
     // Pose tracking
     std::array<double, 16> initial_pose_;
