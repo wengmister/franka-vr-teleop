@@ -4,8 +4,14 @@ from launch import LaunchDescription
 from launch_ros.actions import Node
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
+from ament_index_python.packages import get_package_share_directory
+import os
 
 def generate_launch_description():
+    # Get package directory
+    package_dir = get_package_share_directory('franka_vr_teleop')
+    rviz_config_path = os.path.join(package_dir, 'config', 'pose_viz.rviz')
+    
     # Declare launch arguments
     vr_udp_ip_arg = DeclareLaunchArgument(
         'vr_udp_ip',
@@ -81,6 +87,15 @@ def generate_launch_description():
         output='screen'
     )
     
+    # RViz2 node
+    rviz_node = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
+        arguments=['-d', rviz_config_path],
+        output='screen'
+    )
+    
     return LaunchDescription([
         vr_udp_ip_arg,
         vr_udp_port_arg,
@@ -92,4 +107,5 @@ def generate_launch_description():
         orientation_deadzone_arg,
         smoothing_factor_arg,
         vr_converter_node,
+        rviz_node,
     ])
