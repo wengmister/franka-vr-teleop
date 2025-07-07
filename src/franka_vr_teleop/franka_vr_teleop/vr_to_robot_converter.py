@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# vr_to_robot_converter.py - Convert VR wrist tracking to robot EE commands
+# vr_to_robot_converter.py - Convert VR wrist tracking to robot pose commands
 
 import rclpy
 from rclpy.node import Node
@@ -8,10 +8,8 @@ import threading
 import time
 import re
 import numpy as np
-from scipy.spatial.transform import Rotation
-from geometry_msgs.msg import PoseStamped, Twist
-import tf2_ros
-from tf2_ros import TransformException
+from scipy.spatial.transform import Rotation, Slerp
+from geometry_msgs.msg import PoseStamped
 
 class VRToRobotConverter(Node):
     def __init__(self):
@@ -22,12 +20,10 @@ class VRToRobotConverter(Node):
         self.declare_parameter('vr_udp_port', 9999)
         self.declare_parameter('robot_udp_ip', '192.168.18.1')
         self.declare_parameter('robot_udp_port', 8888)
-        self.declare_parameter('pose_scale', 1.0)  # Back to 1.0 default scale
-        self.declare_parameter('orientation_scale', 1.0)  # Back to 1.0 orientation scale
-        self.declare_parameter('smoothing_factor', 0.8)  # Smoothing for VR data
+        self.declare_parameter('pose_scale', 1.0)
+        self.declare_parameter('orientation_scale', 1.0)
+        self.declare_parameter('smoothing_factor', 0.8)
         self.declare_parameter('control_rate', 50.0)  # Hz
-        self.declare_parameter('position_deadzone', 0.01)  # 1cm deadzone for position
-        self.declare_parameter('orientation_deadzone', 0.05)  # 0.05 rad (~3°) deadzone for orientation
         
         # Get parameters
         self.vr_udp_ip = self.get_parameter('vr_udp_ip').value
@@ -38,21 +34,21 @@ class VRToRobotConverter(Node):
         self.orientation_scale = self.get_parameter('orientation_scale').value
         self.smoothing_factor = self.get_parameter('smoothing_factor').value
         self.control_rate = self.get_parameter('control_rate').value
-        self.position_deadzone = self.get_parameter('position_deadzone').value
-        self.orientation_deadzone = self.get_parameter('orientation_deadzone').value
         
-        # VR wrist tracking state
+        # VR state
         self.current_vr_pose = None
         self.initial_vr_pose = None
         self.vr_data_received = False
         
-        # Robot state
-        self.robot_initial_pose = None
-        self.current_robot_target = None
+        # Robot state - absolute pose (not delta)
+        self.robot_base_pose = {
+            'position': np.array([0.0, 0.0, 0.0]),
+            'orientation': np.array([0.0, 0.0, 0.0, 1.0])  # identity quaternion
+        }
         
         # Smoothing
         self.smoothed_position = np.array([0.0, 0.0, 0.0])
-        self.smoothed_orientation = np.array([0.0, 0.0, 0.0])  # axis-angle representation
+        self.smoothed_orientation = np.array([0.0, 0.0, 0.0, 1.0])
         
         # VR UDP pattern matching
         self.wrist_pattern = re.compile(r'Right wrist:, ([-\d\.]+), ([-\d\.]+), ([-\d\.]+), ([-\d\.]+), ([-\d\.]+), ([-\d\.]+), ([-\d\.]+)')
@@ -73,13 +69,15 @@ class VRToRobotConverter(Node):
         # Control loop timer
         self.timer = self.create_timer(1.0/self.control_rate, self.control_loop)
         
-        # Publishers for debugging/visualization
+        # Publishers for visualization
         self.vr_pose_pub = self.create_publisher(PoseStamped, 'vr_wrist_pose', 10)
         self.robot_target_pub = self.create_publisher(PoseStamped, 'robot_target_pose', 10)
         
-        # Logging
+        # Frequency tracking
         self.command_counter = 0
-        self.log_interval = 50  # Log every 50 cycles (1 second at 50Hz)
+        self.last_log_time = time.time()
+        self.commands_sent = 0
+        self.log_interval = 2.0  # Log every 2 seconds
         
         self.get_logger().info(f"VR to Robot Converter started")
         self.get_logger().info(f"VR UDP: {self.vr_udp_ip}:{self.vr_udp_port}")
@@ -116,11 +114,20 @@ class VRToRobotConverter(Node):
                 
                 # Transform VR coordinates to robot coordinates
                 # VR: +x=right, +y=up, +z=forward → Robot: +x=forward, +y=left, +z=up
-                robot_position = np.array([z, -x, y])  # VR z→robot x, VR -x→robot y, VR y→robot z
+                robot_position = np.array([z, -x, y])
                 
                 # Transform quaternion from VR to robot frame
-                vr_quat = np.array([qx, qy, qz, qw])
-                robot_quat = self.transform_quaternion_vr_to_robot(vr_quat)
+                # Apply coordinate system transformation as rotation composition
+                vr_rot = Rotation.from_quat([qx, qy, qz, qw])
+                
+                # Define transformation from VR coords to robot coords
+                # VR: +x=right, +y=up, +z=forward → Robot: +x=forward, +y=left, +z=up
+                # This is a 90° rotation around Y, then -90° around Z
+                coord_transform = Rotation.from_euler('yxz', [np.pi/2, 0, -np.pi/2])
+                
+                # Apply transformation: new_rotation = transform * original_rotation
+                robot_rot = coord_transform * vr_rot
+                robot_quat = robot_rot.as_quat()
                 
                 # Store current VR pose
                 self.current_vr_pose = {
@@ -140,33 +147,7 @@ class VRToRobotConverter(Node):
         except Exception as e:
             self.get_logger().error(f'Error parsing VR message: {str(e)}')
     
-    def apply_deadzone(self, values, deadzone):
-        """Apply deadzone to a vector - zero out values below threshold"""
-        if isinstance(values, np.ndarray):
-            result = values.copy()
-            # Apply deadzone per component
-            for i in range(len(result)):
-                if abs(result[i]) < deadzone:
-                    result[i] = 0.0
-            return result
-        else:
-            # Single value
-            return 0.0 if abs(values) < deadzone else values
-    
-    def transform_quaternion_vr_to_robot(self, vr_quat):
-        """Transform quaternion from VR coordinate system to robot coordinate system"""
-        # Create rotation from VR quaternion
-        vr_rot = Rotation.from_quat(vr_quat)
-        
-        # Define coordinate system transformation: VR → Robot
-        # VR: +x=right, +y=up, +z=forward
-        # Robot: +x=forward, +y=left, +z=up
-        coord_transform = Rotation.from_euler('xyz', [np.pi/2, 0, -np.pi/2])
-        
-        # Apply transformation
-        robot_rot = coord_transform * vr_rot
-        return robot_rot.as_quat()
-    
+
     def control_loop(self):
         """Main control loop - converts VR pose to robot commands"""
         if not self.vr_data_received or self.current_vr_pose is None:
@@ -178,84 +159,63 @@ class VRToRobotConverter(Node):
             # Calculate pose difference from initial VR pose
             vr_pos_delta = self.current_vr_pose['position'] - self.initial_vr_pose['position']
             
-            # Apply deadzone to position delta
-            vr_pos_delta = self.apply_deadzone(vr_pos_delta, self.position_deadzone)
-            
             # Calculate orientation difference
             initial_rot = Rotation.from_quat(self.initial_vr_pose['orientation'])
             current_rot = Rotation.from_quat(self.current_vr_pose['orientation'])
             relative_rot = current_rot * initial_rot.inv()
-            orientation_delta = relative_rot.as_rotvec()
-            
-            # Apply deadzone to orientation delta
-            orientation_delta = self.apply_deadzone(orientation_delta, self.orientation_deadzone)
             
             # Scale the movements
             scaled_pos_delta = vr_pos_delta * self.pose_scale
-            scaled_orient_delta = orientation_delta * self.orientation_scale
+            scaled_orient_rot = Rotation.from_quat(self.initial_vr_pose['orientation']) * relative_rot
             
             # Apply smoothing
             self.smoothed_position = (self.smoothing_factor * self.smoothed_position + 
                                     (1 - self.smoothing_factor) * scaled_pos_delta)
             
-            # For orientation, smooth in axis-angle space
-            smoothed_orient_delta = (self.smoothing_factor * self.smoothed_orientation + 
-                                   (1 - self.smoothing_factor) * scaled_orient_delta)
+            # For orientation, interpolate quaternions using Slerp
+            current_smooth_rot = Rotation.from_quat(self.smoothed_orientation)
+            target_rot = scaled_orient_rot
             
-            # Update the stored smoothed orientation
-            self.smoothed_orientation = smoothed_orient_delta
+            # Slerp between current and target orientation
+            slerp_t = 1 - self.smoothing_factor
+            key_rotations = Rotation.from_quat([self.smoothed_orientation, target_rot.as_quat()])
+            slerp = Slerp([0, 1], key_rotations)
+            smoothed_rot = slerp(slerp_t)
+            self.smoothed_orientation = smoothed_rot.as_quat()
+            
+            # Calculate absolute target pose (base + delta)
+            target_position = self.robot_base_pose['position'] + self.smoothed_position
+            target_orientation = self.smoothed_orientation
             
             # Send robot command
-            self.send_robot_command(self.smoothed_position, smoothed_orient_delta)
+            self.send_robot_command(target_position, target_orientation)
             
             # Publish target pose for visualization
-            self.publish_robot_target(self.smoothed_position, smoothed_orient_delta)
+            self.publish_robot_target(target_position, target_orientation)
             
-            # Logging
-            if self.command_counter % self.log_interval == 0:
+            # Frequency logging
+            current_time = time.time()
+            if current_time - self.last_log_time >= self.log_interval:
+                frequency = self.commands_sent / (current_time - self.last_log_time)
                 self.get_logger().info(
-                    f'VR→Robot: pos_delta=[{self.smoothed_position[0]:.3f}, {self.smoothed_position[1]:.3f}, {self.smoothed_position[2]:.3f}], '
-                    f'orient_delta=[{smoothed_orient_delta[0]:.3f}, {smoothed_orient_delta[1]:.3f}, {smoothed_orient_delta[2]:.3f}]'
+                    f'Command frequency: {frequency:.1f} Hz | '
+                    f'Target pos: [{target_position[0]:.3f}, {target_position[1]:.3f}, {target_position[2]:.3f}] | '
+                    f'VR delta: [{self.smoothed_position[0]:.3f}, {self.smoothed_position[1]:.3f}, {self.smoothed_position[2]:.3f}]'
                 )
-                
-                # Also log the actual velocities being sent to robot
-                velocity_scale = 0.5  # Updated to match the actual scale
-                test_linear_vel = self.smoothed_position * velocity_scale
-                test_angular_vel = smoothed_orient_delta * velocity_scale
-                test_linear_vel = np.clip(test_linear_vel, -0.05, 0.05)  # Updated limits
-                test_angular_vel = np.clip(test_angular_vel, -0.05, 0.05)
-                
-                self.get_logger().info(
-                    f'Velocities sent: lin=[{test_linear_vel[0]:.4f}, {test_linear_vel[1]:.4f}, {test_linear_vel[2]:.4f}], '
-                    f'ang=[{test_angular_vel[0]:.4f}, {test_angular_vel[1]:.4f}, {test_angular_vel[2]:.4f}]'
-                )
+                self.last_log_time = current_time
+                self.commands_sent = 0
+            
+            self.commands_sent += 1
                 
         except Exception as e:
             self.get_logger().error(f'Error in control loop: {str(e)}')
     
-    def send_robot_command(self, position_delta, orientation_delta):
-        """Send pose command to robot via UDP"""
+    def send_robot_command(self, position, orientation):
+        """Send absolute pose command to robot via UDP"""
         try:
-            # Convert pose deltas to reasonable velocity commands
-            # The key is to send SMALL velocities, not large pose deltas
-            
-            # Scale down the deltas significantly for velocity control
-            velocity_scale = 0.5  # Increased from 0.1 to 0.5 for more visible movement
-            max_linear_vel = 0.05   # Increased to 5cm/s max
-            max_angular_vel = 0.05  # Increased to 0.05 rad/s max
-            
-            # Apply velocity scaling and limits
-            linear_vel = position_delta * velocity_scale
-            angular_vel = orientation_delta * velocity_scale
-            
-            # Clamp to maximum velocities
-            linear_vel = np.clip(linear_vel, -max_linear_vel, max_linear_vel)
-            angular_vel = np.clip(angular_vel, -max_angular_vel, max_angular_vel)
-            
-            # Create UDP message in format expected by robot
-            # "linear_x linear_y linear_z angular_x angular_y angular_z emergency_stop reset_pose"
-            message = f"{linear_vel[0]:.6f} {linear_vel[1]:.6f} {linear_vel[2]:.6f} " + \
-                     f"{angular_vel[0]:.6f} {angular_vel[1]:.6f} {angular_vel[2]:.6f} 0 0"
+            # Send absolute pose: position (x,y,z) and orientation (qx,qy,qz,qw)
+            message = f"{position[0]:.6f} {position[1]:.6f} {position[2]:.6f} " + \
+                     f"{orientation[0]:.6f} {orientation[1]:.6f} {orientation[2]:.6f} {orientation[3]:.6f}"
             
             # Send to robot
             self.robot_socket.sendto(message.encode(), (self.robot_udp_ip, self.robot_udp_port))
@@ -267,9 +227,8 @@ class VRToRobotConverter(Node):
         """Publish VR pose for visualization"""
         pose_msg = PoseStamped()
         pose_msg.header.stamp = self.get_clock().now().to_msg()
-        pose_msg.header.frame_id = "vr_tracking"
+        pose_msg.header.frame_id = "map"  # Use map as parent frame
         
-        # Ensure all values are Python floats, not numpy types
         pose_msg.pose.position.x = float(position[0])
         pose_msg.pose.position.y = float(position[1])
         pose_msg.pose.position.z = float(position[2])
@@ -281,28 +240,20 @@ class VRToRobotConverter(Node):
         
         self.vr_pose_pub.publish(pose_msg)
     
-    def publish_robot_target(self, position_delta, orientation_delta):
+    def publish_robot_target(self, position, orientation):
         """Publish robot target pose for visualization"""
         pose_msg = PoseStamped()
         pose_msg.header.stamp = self.get_clock().now().to_msg()
-        pose_msg.header.frame_id = "robot_target"
+        pose_msg.header.frame_id = "map"  # Use map as parent frame
         
-        # Ensure all values are Python floats
-        pose_msg.pose.position.x = float(position_delta[0])
-        pose_msg.pose.position.y = float(position_delta[1])
-        pose_msg.pose.position.z = float(position_delta[2])
+        pose_msg.pose.position.x = float(position[0])
+        pose_msg.pose.position.y = float(position[1])
+        pose_msg.pose.position.z = float(position[2])
         
-        # Convert axis-angle to quaternion for visualization
-        if np.linalg.norm(orientation_delta) > 1e-6:
-            target_rot = Rotation.from_rotvec(orientation_delta)
-            target_quat = target_rot.as_quat()
-        else:
-            target_quat = np.array([0, 0, 0, 1])
-        
-        pose_msg.pose.orientation.x = float(target_quat[0])
-        pose_msg.pose.orientation.y = float(target_quat[1])
-        pose_msg.pose.orientation.z = float(target_quat[2])
-        pose_msg.pose.orientation.w = float(target_quat[3])
+        pose_msg.pose.orientation.x = float(orientation[0])
+        pose_msg.pose.orientation.y = float(orientation[1])
+        pose_msg.pose.orientation.z = float(orientation[2])
+        pose_msg.pose.orientation.w = float(orientation[3])
         
         self.robot_target_pub.publish(pose_msg)
 
