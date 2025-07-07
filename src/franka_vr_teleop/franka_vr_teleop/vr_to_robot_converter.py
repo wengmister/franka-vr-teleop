@@ -22,7 +22,7 @@ class VRToRobotConverter(Node):
         self.declare_parameter('robot_udp_port', 8888)
         self.declare_parameter('pose_scale', 1.0)
         self.declare_parameter('orientation_scale', 1.0)
-        self.declare_parameter('smoothing_factor', 0.8)
+        self.declare_parameter('smoothing_factor', 0.4)
         self.declare_parameter('control_rate', 50.0)  # Hz
         
         # Get parameters
@@ -77,6 +77,7 @@ class VRToRobotConverter(Node):
         self.command_counter = 0
         self.last_log_time = time.time()
         self.commands_sent = 0
+        self.vr_messages_received = 0  # Track VR message frequency
         self.log_interval = 2.0  # Log every 2 seconds
         
         self.get_logger().info(f"VR to Robot Converter started")
@@ -103,6 +104,9 @@ class VRToRobotConverter(Node):
         try:
             match = self.wrist_pattern.search(message)
             if match:
+                # Increment VR message counter
+                self.vr_messages_received += 1
+
                 # Extract raw VR wrist data
                 x = float(match.group(1))
                 y = float(match.group(2))
@@ -207,14 +211,16 @@ class VRToRobotConverter(Node):
             # Frequency logging
             current_time = time.time()
             if current_time - self.last_log_time >= self.log_interval:
-                frequency = self.commands_sent / (current_time - self.last_log_time)
+                command_frequency = self.commands_sent / (current_time - self.last_log_time)
+                vr_frequency = self.vr_messages_received / (current_time - self.last_log_time)
                 self.get_logger().info(
-                    f'Command frequency: {frequency:.1f} Hz | '
+                    f'VR input: {vr_frequency:.1f} Hz | Command output: {command_frequency:.1f} Hz | '
                     f'Target pos: [{target_position[0]:.3f}, {target_position[1]:.3f}, {target_position[2]:.3f}] | '
                     f'VR delta: [{self.smoothed_position[0]:.3f}, {self.smoothed_position[1]:.3f}, {self.smoothed_position[2]:.3f}]'
                 )
                 self.last_log_time = current_time
                 self.commands_sent = 0
+                self.vr_messages_received = 0
             
             self.commands_sent += 1
                 
