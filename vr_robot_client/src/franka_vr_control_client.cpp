@@ -47,17 +47,17 @@ private:
     
     // Trajectory parameters - designed for smooth VR pose following
     struct TrajParams {
-        double max_velocity = 0.08;           // 8cm/s
-        double max_acceleration = 0.05;       // 5cm/s²
+        double max_velocity = 0.03;           // 3cm/s
+        double max_acceleration = 0.02;       // 2cm/s²
         double max_jerk = 0.1;               // 10cm/s³
-        double max_angular_velocity = 0.3;    // 0.3 rad/s
-        double max_angular_acceleration = 0.15; // 0.15 rad/s²
+        double max_angular_velocity = 0.2;    // 0.2 rad/s
+        double max_angular_acceleration = 0.02; // 0.02 rad/s²
         double max_angular_jerk = 0.2;        // 0.2 rad/s³
         
         // VR pose following parameters
-        double position_tracking_gain = 5.0;   // How aggressively to follow VR position
-        double orientation_tracking_gain = 3.0; // How aggressively to follow VR orientation
-        double smoothing_factor = 0.95;       // Smoothing for VR input (0.95 = heavy smoothing)
+        double position_tracking_gain = 0.2;   // How aggressively to follow VR position
+        double orientation_tracking_gain = 1.0; // How aggressively to follow VR orientation
+        double smoothing_factor = 0.2;       // Smoothing for VR input (0.95 = heavy smoothing)
         
         // Deadzone for VR input (very small since VR is already filtered)
         double position_deadzone = 0.001;     // 1mm
