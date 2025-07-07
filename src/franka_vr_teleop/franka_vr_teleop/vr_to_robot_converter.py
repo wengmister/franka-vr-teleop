@@ -174,21 +174,26 @@ class VRToRobotConverter(Node):
             # Calculate pose difference from initial VR pose
             vr_pos_delta = self.current_vr_pose['position'] - self.initial_vr_pose['position']
             
-            # Calculate orientation difference
-            initial_rot = Rotation.from_quat(self.initial_vr_pose['orientation'])
-            current_rot = Rotation.from_quat(self.current_vr_pose['orientation'])
-            relative_rot = current_rot * initial_rot.inv()
-            
             # Scale the movements
             scaled_pos_delta = vr_pos_delta * self.pose_scale
-            scaled_orient_rot = Rotation.from_quat(self.initial_vr_pose['orientation']) * relative_rot
             
             # Apply smoothing
             self.smoothed_position = (self.smoothing_factor * self.smoothed_position + 
                                     (1 - self.smoothing_factor) * scaled_pos_delta)
             
+            # Calculate orientation difference as axis-angle for scaling
+            initial_rot = Rotation.from_quat(self.initial_vr_pose['orientation'])
+            current_rot = Rotation.from_quat(self.current_vr_pose['orientation'])
+            relative_rot = current_rot * initial_rot.inv()
+            
+            # Scale the relative rotation
+            relative_rotvec = relative_rot.as_rotvec() * self.orientation_scale
+            scaled_relative_rot = Rotation.from_rotvec(relative_rotvec)
+            
+            # Apply scaled relative rotation to initial pose
+            scaled_orient_rot = initial_rot * scaled_relative_rot
+            
             # For orientation, interpolate quaternions using Slerp
-            current_smooth_rot = Rotation.from_quat(self.smoothed_orientation)
             target_rot = scaled_orient_rot
             
             # Slerp between current and target orientation
