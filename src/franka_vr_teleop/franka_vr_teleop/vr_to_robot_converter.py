@@ -117,16 +117,27 @@ class VRToRobotConverter(Node):
                 robot_position = np.array([z, -x, y])
                 
                 # Transform quaternion from VR to robot frame
-                # Apply coordinate system transformation as rotation composition
+                # VR is left-handed, robot is right-handed - need reflection + rotation
                 vr_rot = Rotation.from_quat([qx, qy, qz, qw])
                 
-                # Define transformation from VR coords to robot coords
-                # VR: +x=right, +y=up, +z=forward → Robot: +x=forward, +y=left, +z=up
-                # This is a 90° rotation around Y, then -90° around Z
-                coord_transform = Rotation.from_euler('yxz', [np.pi/2, 0, -np.pi/2])
+                # Convert VR rotation to rotation matrix
+                vr_matrix = vr_rot.as_matrix()
                 
-                # Apply transformation: new_rotation = transform * original_rotation
-                robot_rot = coord_transform * vr_rot
+                # Define coordinate transformation matrix from VR to robot
+                # VR: [right, up, forward] → Robot: [forward, left, up]  
+                # This maps: VR_x→Robot_y, VR_y→Robot_z, VR_z→Robot_x
+                # Include handedness flip by negating one axis
+                transform_matrix = np.array([
+                    [0,  0,  1],  # Robot X = VR Z (forward)
+                    [-1, 0,  0],  # Robot Y = -VR X (left = -right)  
+                    [0,  1,  0]   # Robot Z = VR Y (up)
+                ])
+                
+                # Apply transformation: R_robot = T * R_vr * T^-1
+                robot_matrix = transform_matrix @ vr_matrix @ transform_matrix.T
+                
+                # Convert back to quaternion
+                robot_rot = Rotation.from_matrix(robot_matrix)
                 robot_quat = robot_rot.as_quat()
                 
                 # Store current VR pose
