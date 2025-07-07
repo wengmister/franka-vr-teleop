@@ -345,7 +345,16 @@ public:
             setDefaultBehavior(robot);
             
             // Move to initial configuration
-            std::array<double, 7> q_goal = {{0, -M_PI_4, 0, -3 * M_PI_4, 0, M_PI_2, M_PI_4}};
+            // Joint angles: [60, -80, -80, -100, -45, 170, 80] degrees
+            std::array<double, 7> q_goal = {{
+                60.0 * M_PI / 180.0,   // 60° → 1.047 rad
+                -80.0 * M_PI / 180.0,  // -80° → -1.396 rad  
+                -80.0 * M_PI / 180.0,  // -80° → -1.396 rad
+                -100.0 * M_PI / 180.0, // -100° → -1.745 rad
+                -45.0 * M_PI / 180.0,  // -45° → -0.785 rad
+                160.0 * M_PI / 180.0,  // 160
+                40.0 * M_PI / 180.0    // 40°
+            }};
             MotionGenerator motion_generator(0.5, q_goal);
             std::cout << "WARNING: This example will move the robot!" << std::endl
                       << "Press Enter to continue..." << std::endl;
