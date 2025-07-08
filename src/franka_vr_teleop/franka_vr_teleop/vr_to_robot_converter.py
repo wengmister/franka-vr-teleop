@@ -20,8 +20,6 @@ class VRToRobotConverter(Node):
         self.declare_parameter('vr_udp_port', 9999)
         self.declare_parameter('robot_udp_ip', '192.168.18.1')
         self.declare_parameter('robot_udp_port', 8888)
-        self.declare_parameter('pose_scale', 1.0)
-        self.declare_parameter('orientation_scale', 1.0)
         self.declare_parameter('smoothing_factor', 0.4)
         self.declare_parameter('control_rate', 50.0)  # Hz
         
@@ -30,8 +28,6 @@ class VRToRobotConverter(Node):
         self.vr_udp_port = self.get_parameter('vr_udp_port').value
         self.robot_udp_ip = self.get_parameter('robot_udp_ip').value
         self.robot_udp_port = self.get_parameter('robot_udp_port').value
-        self.pose_scale = self.get_parameter('pose_scale').value
-        self.orientation_scale = self.get_parameter('orientation_scale').value
         self.smoothing_factor = self.get_parameter('smoothing_factor').value
         self.control_rate = self.get_parameter('control_rate').value
         
@@ -174,27 +170,17 @@ class VRToRobotConverter(Node):
             # Calculate pose difference from initial VR pose
             vr_pos_delta = self.current_vr_pose['position'] - self.initial_vr_pose['position']
             
-            # Scale the movements
-            scaled_pos_delta = vr_pos_delta * self.pose_scale
-            
             # Apply smoothing
             self.smoothed_position = (self.smoothing_factor * self.smoothed_position + 
-                                    (1 - self.smoothing_factor) * scaled_pos_delta)
+                                    (1 - self.smoothing_factor) * vr_pos_delta)
             
             # Calculate orientation difference as axis-angle for scaling
             initial_rot = Rotation.from_quat(self.initial_vr_pose['orientation'])
             current_rot = Rotation.from_quat(self.current_vr_pose['orientation'])
             relative_rot = current_rot * initial_rot.inv()
             
-            # Scale the relative rotation
-            relative_rotvec = relative_rot.as_rotvec() * self.orientation_scale
-            scaled_relative_rot = Rotation.from_rotvec(relative_rotvec)
-            
-            # Apply scaled relative rotation to initial pose
-            scaled_orient_rot = initial_rot * scaled_relative_rot
-            
             # For orientation, interpolate quaternions using Slerp
-            target_rot = scaled_orient_rot
+            target_rot = relative_rot
             
             # Slerp between current and target orientation
             slerp_t = 1 - self.smoothing_factor
@@ -205,7 +191,7 @@ class VRToRobotConverter(Node):
             
             # Calculate absolute target pose (base + delta)
             target_position = self.robot_base_pose['position'] + self.smoothed_position
-            target_orientation = self.smoothed_orientation
+            target_orientation = self.robot_base_pose['orientation'] * self.smoothed_orientation
             
             # Send robot command
             self.send_robot_command(target_position, target_orientation)
