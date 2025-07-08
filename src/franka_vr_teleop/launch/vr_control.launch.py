@@ -37,18 +37,6 @@ def generate_launch_description():
         description='Port number for communication with realtime PC'
     )
     
-    pose_scale_arg = DeclareLaunchArgument(
-        'pose_scale',
-        default_value='5.0',
-        description='Scale factor for VR hand movements'
-    )
-    
-    orientation_scale_arg = DeclareLaunchArgument(
-        'orientation_scale',
-        default_value='1.0',
-        description='Scale factor for VR hand rotations'
-    )
-    
     position_deadzone_arg = DeclareLaunchArgument(
         'position_deadzone',
         default_value='0.01',
@@ -77,8 +65,6 @@ def generate_launch_description():
             'vr_udp_port': LaunchConfiguration('vr_udp_port'),
             'robot_udp_ip': LaunchConfiguration('robot_udp_ip'),
             'robot_udp_port': LaunchConfiguration('robot_udp_port'),
-            'pose_scale': LaunchConfiguration('pose_scale'),
-            'orientation_scale': LaunchConfiguration('orientation_scale'),
             'position_deadzone': LaunchConfiguration('position_deadzone'),
             'orientation_deadzone': LaunchConfiguration('orientation_deadzone'),
             'smoothing_factor': LaunchConfiguration('smoothing_factor'),
@@ -101,8 +87,6 @@ def generate_launch_description():
         vr_udp_port_arg,
         robot_udp_ip_arg,
         robot_udp_port_arg,
-        pose_scale_arg,
-        orientation_scale_arg,
         position_deadzone_arg,
         orientation_deadzone_arg,
         smoothing_factor_arg,
