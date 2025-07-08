@@ -170,11 +170,11 @@ class VRToRobotConverter(Node):
             # Calculate pose difference from initial VR pose
             vr_pos_delta = self.current_vr_pose['position'] - self.initial_vr_pose['position']
             
-            # Apply smoothing
+            # Apply smoothing to position
             self.smoothed_position = (self.smoothing_factor * self.smoothed_position + 
                                     (1 - self.smoothing_factor) * vr_pos_delta)
             
-            # Calculate orientation difference as axis-angle for scaling
+            # Calculate orientation difference as relative rotation
             initial_rot = Rotation.from_quat(self.initial_vr_pose['orientation'])
             current_rot = Rotation.from_quat(self.current_vr_pose['orientation'])
             relative_rot = current_rot * initial_rot.inv()
@@ -182,16 +182,22 @@ class VRToRobotConverter(Node):
             # For orientation, interpolate quaternions using Slerp
             target_rot = relative_rot
             
-            # Slerp between current and target orientation
+            # Slerp between current smoothed orientation and target orientation
             slerp_t = 1 - self.smoothing_factor
-            key_rotations = Rotation.from_quat([self.smoothed_orientation, target_rot.as_quat()])
+            current_smoothed_rot = Rotation.from_quat(self.smoothed_orientation)
+            key_rotations = Rotation.from_quat([current_smoothed_rot.as_quat(), target_rot.as_quat()])
             slerp = Slerp([0, 1], key_rotations)
             smoothed_rot = slerp(slerp_t)
             self.smoothed_orientation = smoothed_rot.as_quat()
             
+            # Normalize quaternion to ensure it remains a unit quaternion
+            self.smoothed_orientation = self.smoothed_orientation / np.linalg.norm(self.smoothed_orientation)
+            
             # Calculate absolute target pose (base + delta)
             target_position = self.robot_base_pose['position'] + self.smoothed_position
-            target_orientation = self.robot_base_pose['orientation'] * self.smoothed_orientation
+            
+            # Since base orientation is identity quaternion, we can directly use the smoothed relative orientation
+            target_orientation = self.smoothed_orientation
             
             # Send robot command
             self.send_robot_command(target_position, target_orientation)
