@@ -47,31 +47,36 @@ private:
     
     // Trajectory parameters - designed for smooth VR pose following
     struct TrajParams {
-        double max_velocity = 0.06;           // Reduced from 0.05 (3cm/s)
-        double max_acceleration = 0.02;      // Reduced from 0.02 (1.5cm/s²)
-        double max_jerk = 0.05;               // Reduced from 0.1 (5cm/s³)
-        double max_angular_velocity = 0.3;   // Reduced from 0.2 (0.15 rad/s)
-        double max_angular_acceleration = 0.02; // Reduced from 0.02 (0.015 rad/s²)
-        double max_angular_jerk = 0.05;        // Reduced from 0.2 (0.1 rad/s³)
+        // Motion limits - kept your working values
+        double max_velocity = 0.4;                   
+        double max_acceleration = 0.05;              
+        double max_jerk = 0.05;                      
+        double max_angular_velocity = 0.8;           
+        double max_angular_acceleration = 0.2;       
+        double max_angular_jerk = 0.05;              
         
-        // VR pose following parameters - reduced for stability
-        double position_tracking_gain = 0.1;   // Reduced from 0.2
-        double orientation_tracking_gain = 0.1; // Reduced from 0.2
-        double smoothing_factor = 0.8;         // Increased from 0.05 for more smoothing
+        // VR pose following parameters - balanced gain/damping ratios
+        double position_tracking_gain = 0.08;        // REDUCED to match damping
+        double orientation_tracking_gain = 0.08;     // INCREASED for better tracking
+        double smoothing_factor = 0.2;               // Your working value
         
-        // Damping factors for stability
-        double position_damping = 0.1;         // New: velocity damping
-        double angular_damping = 0.1;          // New: angular velocity damping
+        // Damping factors - matched to gains for critical damping
+        // double position_damping = 0.08;              // MATCHED to position gain
+        // double angular_damping = 0.08;               // MATCHED to orientation gain
+        
+        // Alternative: Critical damping (more aggressive)
+        double position_damping = 0.1;          // 1.5x gain for slight overdamping
+        double angular_damping = 0.12;           // 1.5x gain for slight overdamping
         
         // Deadzone for VR input
-        double position_deadzone = 0.01;       // 10mm
-        double orientation_deadzone = 0.1;    // ~0.3 degrees
+        double position_deadzone = 0.01;             // 10mm
+        double orientation_deadzone = 0.1;           // ~0.3 degrees
         
-        // Error limits to prevent runaway
-        double max_position_error = 0.1;       // 10cm max position error
-        double max_orientation_error = 0.5;    // ~30 degrees max orientation error
+        // Error limits - your relaxed values
+        double max_position_error = 0.2;             // 20cm
+        double max_orientation_error = 0.2;          // ~12 degrees
     } params_;
-    
+
     // Current trajectory state
     TrajectoryPoint current_point_;
     TrajectoryPoint target_point_;
