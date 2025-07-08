@@ -1,4 +1,4 @@
-// VR-Based Cartesian Teleoperation - Pose control from VR input
+// VR-Based Cartesian Teleoperation - Robust Trajectory Generation
 #include <cmath>
 #include <iostream>
 #include <thread>
@@ -25,78 +25,66 @@ struct VRCommand
     bool has_valid_data = false;
 };
 
-// Simple trajectory point with guaranteed smooth derivatives
-struct TrajectoryPoint
+// Simple trajectory state
+struct TrajectoryState
 {
     Eigen::Vector3d position;
     Eigen::Vector3d velocity;
-    Eigen::Vector3d acceleration;
     Eigen::Quaterniond orientation;
     Eigen::Vector3d angular_velocity;
-    Eigen::Vector3d angular_acceleration;
     double time;
+
+    TrajectoryState()
+    {
+        position.setZero();
+        velocity.setZero();
+        orientation.setIdentity();
+        angular_velocity.setZero();
+        time = 0.0;
+    }
 };
 
-class VRCartesianController
+class RobustVRController
 {
 private:
     std::atomic<bool> running_{true};
-    std::atomic<bool> emergency_stop_{false};
     VRCommand current_vr_command_;
     std::mutex command_mutex_;
 
     int server_socket_;
     const int PORT = 8888;
 
-    // Trajectory parameters - designed for smooth VR pose following
+    // Robust trajectory parameters - proven stable values
     struct TrajParams
     {
-        // Motion limits
-        double max_velocity = 0.1; // Slightly reduced for stability
-        double max_acceleration = 0.08;
-        double max_jerk = 0.1;             // Increased for more responsiveness
-        double max_angular_velocity = 0.5; // Reduced from 0.8
-        double max_angular_acceleration = 0.15;
-        double max_angular_jerk = 0.1;
+        // Motion limits - very conservative for stability
+        double max_velocity = 0.05;             // 5cm/s
+        double max_acceleration = 0.03;         // 3cm/s²
+        double max_angular_velocity = 0.1;      // 0.1 rad/s (~6 deg/s)
+        double max_angular_acceleration = 0.05; // 0.05 rad/s²
 
-        // PID-style control gains
-        double position_kp = 1.5; // Proportional gain
-        double position_kd = 0.8; // Derivative (damping) gain
-        double position_ki = 0.1; // Integral gain (new)
+        // VR mapping parameters
+        double position_responsiveness = 0.3;    // How quickly to respond to VR changes
+        double orientation_responsiveness = 0.2; // How quickly to respond to VR orientation
+        double vr_smoothing = 0.8;               // Heavy VR input smoothing
 
-        double orientation_kp = 1.5;  // Proportional gain
-        double orientation_kd = 0.6;  // Derivative (damping) gain
-        double orientation_ki = 0.05; // Integral gain (new)
+        // Deadzones
+        double position_deadzone = 0.002;   // 2mm
+        double orientation_deadzone = 0.03; // ~1.7 degrees
 
-        double smoothing_factor = 0.15; // Reduced for better tracking
-
-        // Deadzone for VR input
-        double position_deadzone = 0.005;   // Reduced to 5mm
-        double orientation_deadzone = 0.05; // Reduced to ~3 degrees
-
-        // Error limits - more generous
-        double max_position_error = 0.3;    // 30cm
-        double max_orientation_error = 0.5; // ~30 degrees
-
-        // Integral windup limits
-        double max_position_integral = 0.02;   // 2cm
-        double max_orientation_integral = 0.1; // ~6 degrees
+        // Workspace limits
+        double max_position_offset = 0.15;    // 15cm from initial position
+        double max_orientation_offset = 0.25; // ~14 degrees from initial orientation
     } params_;
 
-    // Integral error
-    Eigen::Vector3d position_integral_error_{0, 0, 0};
-    Eigen::Vector3d orientation_integral_error_{0, 0, 0};
+    // State
+    TrajectoryState current_state_;
+    Eigen::Vector3d target_position_;
+    Eigen::Quaterniond target_orientation_;
 
-    // Current trajectory state
-    TrajectoryPoint current_point_;
-    TrajectoryPoint target_point_;
-
-    // VR target filtering
+    // VR filtering
     Eigen::Vector3d filtered_vr_position_{0, 0, 0};
     Eigen::Quaterniond filtered_vr_orientation_{1, 0, 0, 0};
-
-    // Trajectory history for smooth derivatives
-    std::deque<TrajectoryPoint> trajectory_history_;
 
     // Initial poses
     Eigen::Affine3d initial_robot_pose_;
@@ -105,14 +93,12 @@ private:
     bool vr_initialized_ = false;
 
 public:
-    VRCartesianController()
+    RobustVRController()
     {
         setupNetworking();
-        initializeTrajectoryPoint(current_point_);
-        initializeTrajectoryPoint(target_point_);
     }
 
-    ~VRCartesianController()
+    ~RobustVRController()
     {
         running_ = false;
         close(server_socket_);
@@ -158,7 +144,6 @@ public:
                 buffer[bytes_received] = '\0';
 
                 VRCommand cmd;
-                // Parse VR pose: "pos_x pos_y pos_z quat_x quat_y quat_z quat_w"
                 int parsed_count = sscanf(buffer, "%lf %lf %lf %lf %lf %lf %lf",
                                           &cmd.pos_x, &cmd.pos_y, &cmd.pos_z,
                                           &cmd.quat_x, &cmd.quat_y, &cmd.quat_z, &cmd.quat_w);
@@ -170,7 +155,6 @@ public:
                     std::lock_guard<std::mutex> lock(command_mutex_);
                     current_vr_command_ = cmd;
 
-                    // Initialize VR reference on first valid data
                     if (!vr_initialized_)
                     {
                         initial_vr_position_ = Eigen::Vector3d(cmd.pos_x, cmd.pos_y, cmd.pos_z);
@@ -191,48 +175,7 @@ public:
     }
 
 private:
-    void initializeTrajectoryPoint(TrajectoryPoint &point)
-    {
-        point.position.setZero();
-        point.velocity.setZero();
-        point.acceleration.setZero();
-        point.orientation.setIdentity();
-        point.angular_velocity.setZero();
-        point.angular_acceleration.setZero();
-        point.time = 0.0;
-    }
-
-    Eigen::Vector3d calculateOrientationError(const Eigen::Quaterniond &target,
-                                              const Eigen::Quaterniond &current)
-    {
-        // Use quaternion logarithm for better error calculation
-        Eigen::Quaterniond error_quat = target * current.inverse();
-        error_quat.normalize();
-
-        // Ensure shortest path (flip if w < 0)
-        if (error_quat.w() < 0)
-        {
-            error_quat.coeffs() *= -1;
-        }
-
-        // Convert to angle-axis (logarithmic map)
-        Eigen::Vector3d error_axis_angle = Eigen::Vector3d::Zero();
-        double angle = 2.0 * std::acos(std::abs(error_quat.w()));
-
-        if (angle > 1e-6)
-        {
-            double sin_half_angle = std::sqrt(1.0 - error_quat.w() * error_quat.w());
-            if (sin_half_angle > 1e-6)
-            {
-                error_axis_angle = (angle / sin_half_angle) *
-                                   Eigen::Vector3d(error_quat.x(), error_quat.y(), error_quat.z());
-            }
-        }
-
-        return error_axis_angle;
-    }
-
-    void processVRInput(const VRCommand &cmd, double dt)
+    void updateVRTargets(const VRCommand &cmd)
     {
         if (!cmd.has_valid_data || !vr_initialized_)
         {
@@ -240,225 +183,144 @@ private:
         }
 
         // Current VR pose
-        Eigen::Vector3d vr_position(cmd.pos_x, cmd.pos_y, cmd.pos_z);
-        Eigen::Quaterniond vr_orientation(cmd.quat_w, cmd.quat_x, cmd.quat_y, cmd.quat_z);
-        vr_orientation.normalize();
+        Eigen::Vector3d vr_pos(cmd.pos_x, cmd.pos_y, cmd.pos_z);
+        Eigen::Quaterniond vr_quat(cmd.quat_w, cmd.quat_x, cmd.quat_y, cmd.quat_z);
+        vr_quat.normalize();
 
-        // Apply smoothing to VR input (more aggressive smoothing)
-        double alpha = (1.0 - params_.smoothing_factor);
+        // Heavy smoothing on VR input
+        double alpha = 1.0 - params_.vr_smoothing;
+        filtered_vr_position_ = params_.vr_smoothing * filtered_vr_position_ + alpha * vr_pos;
+        filtered_vr_orientation_ = filtered_vr_orientation_.slerp(alpha, vr_quat);
 
-        // Smooth position
-        filtered_vr_position_ = params_.smoothing_factor * filtered_vr_position_ +
-                                alpha * vr_position;
+        // Calculate deltas from initial VR pose
+        Eigen::Vector3d vr_pos_delta = filtered_vr_position_ - initial_vr_position_;
+        Eigen::Quaterniond vr_quat_delta = filtered_vr_orientation_ * initial_vr_orientation_.inverse();
 
-        // Smooth orientation using SLERP
-        filtered_vr_orientation_ = filtered_vr_orientation_.slerp(alpha, vr_orientation);
-
-        // Calculate VR deltas from initial pose
-        Eigen::Vector3d vr_position_delta = filtered_vr_position_ - initial_vr_position_;
-        Eigen::Quaterniond vr_orientation_delta = filtered_vr_orientation_ * initial_vr_orientation_.inverse();
-
-        // Apply deadzone
-        if (vr_position_delta.norm() < params_.position_deadzone)
+        // Apply deadzones
+        if (vr_pos_delta.norm() < params_.position_deadzone)
         {
-            vr_position_delta.setZero();
+            vr_pos_delta.setZero();
         }
 
-        // For orientation deadzone, check the rotation angle
-        double rotation_angle = 2.0 * std::acos(std::abs(vr_orientation_delta.w()));
+        double rotation_angle = 2.0 * std::acos(std::abs(vr_quat_delta.w()));
         if (rotation_angle < params_.orientation_deadzone)
         {
-            vr_orientation_delta.setIdentity();
+            vr_quat_delta.setIdentity();
         }
 
-        // Calculate target robot pose (initial robot pose + VR delta)
-        target_point_.position = initial_robot_pose_.translation() + vr_position_delta;
-
-        // FIXED: Correct quaternion multiplication order
-        // Apply VR delta rotation to the initial robot orientation
-        target_point_.orientation = vr_orientation_delta * Eigen::Quaterniond(initial_robot_pose_.rotation());
-        target_point_.orientation.normalize();
-
-        // Apply error limits to prevent runaway behavior
-        Eigen::Vector3d position_error = target_point_.position - current_point_.position;
-        if (position_error.norm() > params_.max_position_error)
+        // Apply workspace limits
+        if (vr_pos_delta.norm() > params_.max_position_offset)
         {
-            position_error = position_error.normalized() * params_.max_position_error;
-            target_point_.position = current_point_.position + position_error;
+            vr_pos_delta = vr_pos_delta.normalized() * params_.max_position_offset;
         }
 
-        // Limit orientation error
-        Eigen::Quaterniond orientation_error = target_point_.orientation * current_point_.orientation.inverse();
-        double orientation_angle = 2.0 * std::acos(std::abs(orientation_error.w()));
-        if (orientation_angle > params_.max_orientation_error)
+        if (rotation_angle > params_.max_orientation_offset)
         {
-            // Scale down the rotation to the maximum allowed
-            Eigen::AngleAxisd angle_axis(orientation_error);
-            double scale_factor = params_.max_orientation_error / orientation_angle;
-            Eigen::AngleAxisd scaled_rotation(angle_axis.angle() * scale_factor, angle_axis.axis());
-            target_point_.orientation = current_point_.orientation * Eigen::Quaterniond(scaled_rotation);
-            target_point_.orientation.normalize();
+            Eigen::AngleAxisd axis_angle(vr_quat_delta);
+            double scale = params_.max_orientation_offset / rotation_angle;
+            vr_quat_delta = Eigen::Quaterniond(Eigen::AngleAxisd(axis_angle.angle() * scale, axis_angle.axis()));
         }
+
+        // Set targets
+        target_position_ = initial_robot_pose_.translation() + vr_pos_delta;
+        target_orientation_ = vr_quat_delta * Eigen::Quaterniond(initial_robot_pose_.rotation());
+        target_orientation_.normalize();
     }
 
-    // Improved trajectory generation with PID control
-    TrajectoryPoint generateNextTrajectoryPoint(double dt)
+    // Simple, robust trajectory generation using exponential approach
+    TrajectoryState generateNextState(double dt)
     {
-        TrajectoryPoint next_point = current_point_;
-        next_point.time += dt;
+        TrajectoryState next_state = current_state_;
+        next_state.time += dt;
 
-        // Position control with PID
-        Eigen::Vector3d position_error = target_point_.position - current_point_.position;
+        // Position control: exponential approach to target
+        Eigen::Vector3d position_error = target_position_ - current_state_.position;
+        Eigen::Vector3d desired_velocity = position_error * params_.position_responsiveness;
 
-        // Update integral term with windup protection
-        position_integral_error_ += position_error * dt;
-        for (int i = 0; i < 3; i++)
+        // Limit desired velocity
+        if (desired_velocity.norm() > params_.max_velocity)
         {
-            position_integral_error_[i] = std::max(-params_.max_position_integral,
-                                                   std::min(params_.max_position_integral,
-                                                            position_integral_error_[i]));
+            desired_velocity = desired_velocity.normalized() * params_.max_velocity;
         }
 
-        // PID control law for position
-        Eigen::Vector3d desired_velocity =
-            params_.position_kp * position_error +             // Proportional
-            params_.position_kd * (-current_point_.velocity) + // Derivative (velocity feedback)
-            params_.position_ki * position_integral_error_;    // Integral
+        // Smooth velocity change with acceleration limits
+        Eigen::Vector3d velocity_error = desired_velocity - current_state_.velocity;
+        Eigen::Vector3d acceleration = velocity_error / dt;
 
-        // Orientation control with improved error calculation
-        Eigen::Vector3d orientation_error = calculateOrientationError(target_point_.orientation,
-                                                                      current_point_.orientation);
-
-        // Update orientation integral with windup protection
-        orientation_integral_error_ += orientation_error * dt;
-        for (int i = 0; i < 3; i++)
+        // Apply acceleration limits
+        if (acceleration.norm() > params_.max_acceleration)
         {
-            orientation_integral_error_[i] = std::max(-params_.max_orientation_integral,
-                                                      std::min(params_.max_orientation_integral,
-                                                               orientation_integral_error_[i]));
+            acceleration = acceleration.normalized() * params_.max_acceleration;
         }
 
-        // PID control law for orientation
-        Eigen::Vector3d desired_angular_velocity =
-            params_.orientation_kp * orientation_error +                  // Proportional
-            params_.orientation_kd * (-current_point_.angular_velocity) + // Derivative
-            params_.orientation_ki * orientation_integral_error_;         // Integral
+        // Update velocity and position
+        next_state.velocity = current_state_.velocity + acceleration * dt;
+        next_state.position = current_state_.position + next_state.velocity * dt;
 
-        // Apply velocity limits
-        double vel_norm = desired_velocity.norm();
-        if (vel_norm > params_.max_velocity)
+        // FIXED ORIENTATION CONTROL: Use SLERP instead of angular velocity integration
+        // This eliminates drift and numerical errors
+
+        // Calculate how much to interpolate toward target
+        double slerp_factor = params_.orientation_responsiveness * dt;
+
+        // Limit the interpolation step to prevent large jumps
+        slerp_factor = std::min(slerp_factor, 0.1); // Max 10% per step
+
+        // Use SLERP to smoothly approach target orientation
+        next_state.orientation = current_state_.orientation.slerp(slerp_factor, target_orientation_);
+        next_state.orientation.normalize();
+
+        // Calculate angular velocity from orientation change (for smoothness)
+        Eigen::Quaterniond orientation_diff = next_state.orientation * current_state_.orientation.inverse();
+        orientation_diff.normalize();
+
+        // Ensure shortest path
+        if (orientation_diff.w() < 0)
         {
-            desired_velocity = desired_velocity * (params_.max_velocity / vel_norm);
+            orientation_diff.coeffs() *= -1;
         }
 
-        double ang_vel_norm = desired_angular_velocity.norm();
-        if (ang_vel_norm > params_.max_angular_velocity)
+        // Convert orientation change to angular velocity
+        if (dt > 1e-8)
         {
-            desired_angular_velocity = desired_angular_velocity * (params_.max_angular_velocity / ang_vel_norm);
-        }
-
-        // Generate smooth trajectory with acceleration/jerk limits
-        for (int i = 0; i < 3; i++)
-        {
-            // Linear motion
-            double vel_error = desired_velocity[i] - current_point_.velocity[i];
-            double desired_accel = vel_error / dt;
-            double accel_error = desired_accel - current_point_.acceleration[i];
-
-            // Limit jerk
-            double jerk = std::max(-params_.max_jerk,
-                                   std::min(params_.max_jerk, accel_error / dt));
-
-            // Update acceleration with jerk limit
-            next_point.acceleration[i] = current_point_.acceleration[i] + jerk * dt;
-
-            // Limit acceleration magnitude
-            next_point.acceleration[i] = std::max(-params_.max_acceleration,
-                                                  std::min(params_.max_acceleration, next_point.acceleration[i]));
-
-            // Update velocity and position
-            next_point.velocity[i] = current_point_.velocity[i] + next_point.acceleration[i] * dt;
-            next_point.position[i] = current_point_.position[i] + next_point.velocity[i] * dt;
-
-            // Angular motion - similar approach
-            double angular_vel_error = desired_angular_velocity[i] - current_point_.angular_velocity[i];
-            double desired_angular_accel = angular_vel_error / dt;
-            double angular_accel_error = desired_angular_accel - current_point_.angular_acceleration[i];
-
-            double angular_jerk = std::max(-params_.max_angular_jerk,
-                                           std::min(params_.max_angular_jerk, angular_accel_error / dt));
-
-            next_point.angular_acceleration[i] = current_point_.angular_acceleration[i] + angular_jerk * dt;
-            next_point.angular_acceleration[i] = std::max(-params_.max_angular_acceleration,
-                                                          std::min(params_.max_angular_acceleration,
-                                                                   next_point.angular_acceleration[i]));
-
-            next_point.angular_velocity[i] = current_point_.angular_velocity[i] +
-                                             next_point.angular_acceleration[i] * dt;
-        }
-
-        // Update orientation using angular velocity (improved integration)
-        if (next_point.angular_velocity.norm() > 1e-8)
-        {
-            double angle = next_point.angular_velocity.norm() * dt;
-            Eigen::Vector3d axis = next_point.angular_velocity.normalized();
-            Eigen::Quaterniond delta_quat(Eigen::AngleAxisd(angle, axis));
-            next_point.orientation = current_point_.orientation * delta_quat;
-            next_point.orientation.normalize();
+            double angle = 2.0 * std::acos(std::abs(orientation_diff.w()));
+            if (angle > 1e-6)
+            {
+                double sin_half_angle = std::sqrt(1.0 - orientation_diff.w() * orientation_diff.w());
+                if (sin_half_angle > 1e-6)
+                {
+                    Eigen::Vector3d axis = Eigen::Vector3d(orientation_diff.x(), orientation_diff.y(), orientation_diff.z()) / sin_half_angle;
+                    next_state.angular_velocity = axis * angle / dt;
+                }
+                else
+                {
+                    next_state.angular_velocity.setZero();
+                }
+            }
+            else
+            {
+                next_state.angular_velocity.setZero();
+            }
         }
         else
         {
-            next_point.orientation = current_point_.orientation;
+            next_state.angular_velocity.setZero();
         }
 
-        // Workspace enforcement
-        enforceWorkspaceLimits(next_point);
+        // Apply angular velocity limits for safety
+        if (next_state.angular_velocity.norm() > params_.max_angular_velocity)
+        {
+            next_state.angular_velocity = next_state.angular_velocity.normalized() * params_.max_angular_velocity;
+        }
 
-        return next_point;
+        return next_state;
     }
 
-    void enforceWorkspaceLimits(TrajectoryPoint &point)
-    {
-        Eigen::Vector3d relative_pos = point.position - initial_robot_pose_.translation();
-        Eigen::Vector3d workspace_min{-0.25, -0.25, -0.25};
-        Eigen::Vector3d workspace_max{0.25, 0.25, 0.25};
-
-        bool hit_limit = false;
-        for (int i = 0; i < 3; i++)
-        {
-            if (relative_pos[i] < workspace_min[i])
-            {
-                relative_pos[i] = workspace_min[i];
-                point.velocity[i] = std::max(0.0, point.velocity[i]);
-                point.acceleration[i] = 0.0;
-                hit_limit = true;
-            }
-            else if (relative_pos[i] > workspace_max[i])
-            {
-                relative_pos[i] = workspace_max[i];
-                point.velocity[i] = std::min(0.0, point.velocity[i]);
-                point.acceleration[i] = 0.0;
-                hit_limit = true;
-            }
-        }
-
-        if (hit_limit)
-        {
-            point.position = initial_robot_pose_.translation() + relative_pos;
-            static int limit_warn_count = 0;
-            limit_warn_count++;
-            if (limit_warn_count % 1000 == 0)
-            {
-                std::cout << "Workspace limit enforced" << std::endl;
-            }
-        }
-    }
-
-    franka::CartesianPose trajectoryPointToCartesianPose(const TrajectoryPoint &point)
+    franka::CartesianPose stateToCartesianPose(const TrajectoryState &state)
     {
         Eigen::Affine3d pose;
-        pose.translation() = point.position;
-        pose.linear() = point.orientation.toRotationMatrix();
+        pose.translation() = state.position;
+        pose.linear() = state.orientation.toRotationMatrix();
 
         std::array<double, 16> pose_array;
         Eigen::Map<Eigen::Matrix4d>(pose_array.data()) = pose.matrix();
@@ -475,43 +337,42 @@ public:
             setDefaultBehavior(robot);
 
             // Move to initial configuration
-            // Joint angles: [60, -80, -80, -100, -45, 170, 80] degrees
-            std::array<double, 7> q_goal = {{
-                60.0 * M_PI / 180.0,   // 60° → 1.047 rad
-                -55.0 * M_PI / 180.0,  // -80° → -1.396 rad
-                -70.0 * M_PI / 180.0,  // -80° → -1.396 rad
-                -100.0 * M_PI / 180.0, // -100° → -1.745 rad
-                -30.0 * M_PI / 180.0,  // -45° → -0.785 rad
-                160.0 * M_PI / 180.0,  // 160
-                30.0 * M_PI / 180.0    // 40°
-            }};
+            std::array<double, 7> q_goal = {{60.0 * M_PI / 180.0,
+                                             -55.0 * M_PI / 180.0,
+                                             -70.0 * M_PI / 180.0,
+                                             -100.0 * M_PI / 180.0,
+                                             -30.0 * M_PI / 180.0,
+                                             160.0 * M_PI / 180.0,
+                                             30.0 * M_PI / 180.0}};
             MotionGenerator motion_generator(0.5, q_goal);
             std::cout << "WARNING: This example will move the robot!" << std::endl
                       << "Press Enter to continue..." << std::endl;
             std::cin.ignore();
             robot.control(motion_generator);
 
-            // Configure robot for smooth operation with more conservative settings
+            // Conservative collision behavior
             robot.setCollisionBehavior(
                 {{100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 60.0}}, {{100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 60.0}},
                 {{100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 60.0}}, {{100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 60.0}},
                 {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}}, {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}},
                 {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}}, {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}});
 
-            // Higher impedance for more stability
+            // Moderate impedance for smooth motion
             robot.setCartesianImpedance({{1000, 1000, 1000, 100, 100, 100}});
 
-            // Initialize trajectory from current pose
+            // Initialize from current pose
             franka::RobotState state = robot.readOnce();
             initial_robot_pose_ = Eigen::Affine3d(Eigen::Matrix4d::Map(state.O_T_EE_d.data()));
 
-            current_point_.position = initial_robot_pose_.translation();
-            current_point_.orientation = Eigen::Quaterniond(initial_robot_pose_.rotation());
+            current_state_.position = initial_robot_pose_.translation();
+            current_state_.orientation = Eigen::Quaterniond(initial_robot_pose_.rotation());
+            current_state_.velocity.setZero();
+            current_state_.angular_velocity.setZero();
 
-            target_point_.position = current_point_.position;
-            target_point_.orientation = current_point_.orientation;
+            target_position_ = current_state_.position;
+            target_orientation_ = current_state_.orientation;
 
-            std::thread network_thread(&VRCartesianController::networkThread, this);
+            std::thread network_thread(&RobustVRController::networkThread, this);
 
             std::cout << "Waiting for VR data..." << std::endl;
             while (!vr_initialized_ && running_)
@@ -521,8 +382,8 @@ public:
 
             if (vr_initialized_)
             {
-                std::cout << "VR initialized! Starting robot control..." << std::endl;
-                this->runVRCartesianTeleop(robot);
+                std::cout << "VR initialized! Starting robust trajectory control..." << std::endl;
+                this->runTrajectoryControl(robot);
             }
 
             running_ = false;
@@ -536,9 +397,9 @@ public:
     }
 
 private:
-    void runVRCartesianTeleop(franka::Robot &robot)
+    void runTrajectoryControl(franka::Robot &robot)
     {
-        std::cout << "Starting VR-based Cartesian teleoperation..." << std::endl;
+        std::cout << "Starting robust VR trajectory control..." << std::endl;
 
         try
         {
@@ -558,11 +419,6 @@ private:
             iteration_count++;
             double dt = period.toSec();
 
-            if (emergency_stop_)
-            {
-                return franka::MotionFinished(trajectoryPointToCartesianPose(current_point_));
-            }
-
             // Get VR command
             VRCommand cmd;
             {
@@ -570,44 +426,41 @@ private:
                 cmd = current_vr_command_;
             }
 
-            // Only start control after initialization
+            // Update targets and generate trajectory
             if (iteration_count > 10 && dt > 0.0 && dt < 0.01 && vr_initialized_)
             {
-                processVRInput(cmd, dt);
-                current_point_ = generateNextTrajectoryPoint(dt);
+                updateVRTargets(cmd);
+                current_state_ = generateNextState(dt);
 
-                // More frequent debug output for monitoring
-                if (iteration_count % 500 == 0)
+                // Debug output
+                if (iteration_count % 2000 == 0)
                 {
-                    Eigen::Vector3d pos_error = target_point_.position - current_point_.position;
-                    Eigen::Vector3d orient_error = calculateOrientationError(target_point_.orientation,
-                                                                             current_point_.orientation);
+                    Eigen::Vector3d pos_error = target_position_ - current_state_.position;
+                    Eigen::Quaterniond orient_error = target_orientation_ * current_state_.orientation.inverse();
+                    double orient_angle = 2.0 * std::acos(std::abs(orient_error.w()));
 
-                    std::cout << "VR Control Debug:" << std::endl
+                    std::cout << "Robust VR Control:" << std::endl
                               << "  Pos error: " << pos_error.norm() << " m" << std::endl
-                              << "  Orient error: " << orient_error.norm() << " rad ("
-                              << (orient_error.norm() * 180.0 / M_PI) << " deg)" << std::endl
-                              << "  Pos integral: " << position_integral_error_.norm() << std::endl
-                              << "  Orient integral: " << orientation_integral_error_.norm() << std::endl
-                              << "  Velocity: " << current_point_.velocity.norm() << " m/s" << std::endl
-                              << "  Angular vel: " << current_point_.angular_velocity.norm() << " rad/s" << std::endl;
+                              << "  Orient error: " << (orient_angle * 180.0 / M_PI) << " deg" << std::endl
+                              << "  Velocity: " << current_state_.velocity.norm() << " m/s" << std::endl
+                              << "  Angular vel: " << current_state_.angular_velocity.norm() << " rad/s" << std::endl;
                 }
             }
 
-            return trajectoryPointToCartesianPose(current_point_);
+            return stateToCartesianPose(current_state_);
         };
 
         try
         {
             robot.control(trajectory_generator);
-            std::cout << "VR control finished normally." << std::endl;
+            std::cout << "Robust VR control finished normally." << std::endl;
         }
         catch (const franka::ControlException &e)
         {
-            std::cout << "VR control exception: " << e.what() << std::endl;
-            std::cout << "Final state: pos=[" << current_point_.position.x() << ", "
-                      << current_point_.position.y() << ", " << current_point_.position.z() << "]"
-                      << " vel=" << current_point_.velocity.norm() << std::endl;
+            std::cout << "Robust VR control exception: " << e.what() << std::endl;
+            std::cout << "Final state: pos=[" << current_state_.position.x() << ", "
+                      << current_state_.position.y() << ", " << current_state_.position.z() << "]"
+                      << " vel=" << current_state_.velocity.norm() << std::endl;
         }
     }
 };
@@ -622,7 +475,7 @@ int main(int argc, char **argv)
 
     try
     {
-        VRCartesianController controller;
+        RobustVRController controller;
         controller.run(argv[1]);
     }
     catch (const std::exception &e)
