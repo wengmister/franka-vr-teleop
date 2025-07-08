@@ -55,7 +55,7 @@ private:
         double max_angular_jerk = 0.2;        // 0.2 rad/s³
         
         // VR pose following parameters
-        double position_tracking_gain = 0.2;   // How aggressively to follow VR position
+        double position_tracking_gain = 0.5;   // How aggressively to follow VR position
         double orientation_tracking_gain = 1.0; // How aggressively to follow VR orientation
         double smoothing_factor = 0.2;       // Smoothing for VR input (0.95 = heavy smoothing)
         
@@ -348,12 +348,12 @@ public:
             // Joint angles: [60, -80, -80, -100, -45, 170, 80] degrees
             std::array<double, 7> q_goal = {{
                 60.0 * M_PI / 180.0,   // 60° → 1.047 rad
-                -80.0 * M_PI / 180.0,  // -80° → -1.396 rad  
-                -80.0 * M_PI / 180.0,  // -80° → -1.396 rad
+                -55.0 * M_PI / 180.0,  // -80° → -1.396 rad  
+                -70.0 * M_PI / 180.0,  // -80° → -1.396 rad
                 -100.0 * M_PI / 180.0, // -100° → -1.745 rad
-                -45.0 * M_PI / 180.0,  // -45° → -0.785 rad
+                -30.0 * M_PI / 180.0,  // -45° → -0.785 rad
                 160.0 * M_PI / 180.0,  // 160
-                40.0 * M_PI / 180.0    // 40°
+                30.0 * M_PI / 180.0    // 40°
             }};
             MotionGenerator motion_generator(0.5, q_goal);
             std::cout << "WARNING: This example will move the robot!" << std::endl
