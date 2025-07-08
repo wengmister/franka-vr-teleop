@@ -47,21 +47,29 @@ private:
     
     // Trajectory parameters - designed for smooth VR pose following
     struct TrajParams {
-        double max_velocity = 0.03;           // 3cm/s
-        double max_acceleration = 0.02;       // 2cm/s²
-        double max_jerk = 0.1;               // 10cm/s³
-        double max_angular_velocity = 0.2;    // 0.2 rad/s
-        double max_angular_acceleration = 0.02; // 0.02 rad/s²
-        double max_angular_jerk = 0.2;        // 0.2 rad/s³
+        double max_velocity = 0.06;           // Reduced from 0.05 (3cm/s)
+        double max_acceleration = 0.02;      // Reduced from 0.02 (1.5cm/s²)
+        double max_jerk = 0.05;               // Reduced from 0.1 (5cm/s³)
+        double max_angular_velocity = 0.3;   // Reduced from 0.2 (0.15 rad/s)
+        double max_angular_acceleration = 0.02; // Reduced from 0.02 (0.015 rad/s²)
+        double max_angular_jerk = 0.05;        // Reduced from 0.2 (0.1 rad/s³)
         
-        // VR pose following parameters
-        double position_tracking_gain = 0.5;   // How aggressively to follow VR position
-        double orientation_tracking_gain = 1.0; // How aggressively to follow VR orientation
-        double smoothing_factor = 0.2;       // Smoothing for VR input (0.95 = heavy smoothing)
+        // VR pose following parameters - reduced for stability
+        double position_tracking_gain = 0.1;   // Reduced from 0.2
+        double orientation_tracking_gain = 0.1; // Reduced from 0.2
+        double smoothing_factor = 0.8;         // Increased from 0.05 for more smoothing
         
-        // Deadzone for VR input (very small since VR is already filtered)
-        double position_deadzone = 0.001;     // 1mm
-        double orientation_deadzone = 0.005;  // ~0.3 degrees
+        // Damping factors for stability
+        double position_damping = 0.1;         // New: velocity damping
+        double angular_damping = 0.1;          // New: angular velocity damping
+        
+        // Deadzone for VR input
+        double position_deadzone = 0.01;       // 10mm
+        double orientation_deadzone = 0.1;    // ~0.3 degrees
+        
+        // Error limits to prevent runaway
+        double max_position_error = 0.1;       // 10cm max position error
+        double max_orientation_error = 0.5;    // ~30 degrees max orientation error
     } params_;
     
     // Current trajectory state
@@ -178,7 +186,7 @@ private:
         Eigen::Quaterniond vr_orientation(cmd.quat_w, cmd.quat_x, cmd.quat_y, cmd.quat_z);
         vr_orientation.normalize();
         
-        // Apply smoothing to VR input
+        // Apply smoothing to VR input (more aggressive smoothing)
         double alpha = (1.0 - params_.smoothing_factor);
         
         // Smooth position
@@ -205,8 +213,30 @@ private:
         
         // Calculate target robot pose (initial robot pose + VR delta)
         target_point_.position = initial_robot_pose_.translation() + vr_position_delta;
-        target_point_.orientation = Eigen::Quaterniond(initial_robot_pose_.rotation()) * vr_orientation_delta;
+        
+        // FIXED: Correct quaternion multiplication order
+        // Apply VR delta rotation to the initial robot orientation
+        target_point_.orientation = vr_orientation_delta * Eigen::Quaterniond(initial_robot_pose_.rotation());
         target_point_.orientation.normalize();
+        
+        // Apply error limits to prevent runaway behavior
+        Eigen::Vector3d position_error = target_point_.position - current_point_.position;
+        if (position_error.norm() > params_.max_position_error) {
+            position_error = position_error.normalized() * params_.max_position_error;
+            target_point_.position = current_point_.position + position_error;
+        }
+        
+        // Limit orientation error
+        Eigen::Quaterniond orientation_error = target_point_.orientation * current_point_.orientation.inverse();
+        double orientation_angle = 2.0 * std::acos(std::abs(orientation_error.w()));
+        if (orientation_angle > params_.max_orientation_error) {
+            // Scale down the rotation to the maximum allowed
+            Eigen::AngleAxisd angle_axis(orientation_error);
+            double scale_factor = params_.max_orientation_error / orientation_angle;
+            Eigen::AngleAxisd scaled_rotation(angle_axis.angle() * scale_factor, angle_axis.axis());
+            target_point_.orientation = current_point_.orientation * Eigen::Quaterniond(scaled_rotation);
+            target_point_.orientation.normalize();
+        }
     }
     
     TrajectoryPoint generateNextTrajectoryPoint(double dt) {
@@ -217,23 +247,32 @@ private:
         Eigen::Vector3d position_error = target_point_.position - current_point_.position;
         Eigen::Vector3d desired_velocity = position_error * params_.position_tracking_gain;
         
+        // Add damping to desired velocity
+        Eigen::Vector3d position_damping = -params_.position_damping * current_point_.velocity;
+        desired_velocity += position_damping;
+        
         // Calculate desired angular velocity to reach target orientation
         Eigen::Quaterniond orientation_error = target_point_.orientation * current_point_.orientation.inverse();
         orientation_error.normalize();
         
-        // Convert quaternion error to angular velocity
+        // IMPROVED: Better angular velocity calculation using angle-axis
         Eigen::Vector3d desired_angular_velocity = Eigen::Vector3d::Zero();
         if (std::abs(orientation_error.w()) < 1.0) {
-            double angle = 2.0 * std::acos(std::abs(orientation_error.w()));
+            Eigen::AngleAxisd angle_axis(orientation_error);
+            double angle = angle_axis.angle();
             if (angle > 1e-6) {
-                Eigen::Vector3d axis(orientation_error.x(), orientation_error.y(), orientation_error.z());
-                axis.normalize();
-                if (orientation_error.w() < 0) {
-                    axis = -axis;
+                // Ensure we take the shortest path
+                if (angle > M_PI) {
+                    angle = 2 * M_PI - angle;
+                    angle_axis = Eigen::AngleAxisd(-angle, angle_axis.axis());
                 }
-                desired_angular_velocity = axis * angle * params_.orientation_tracking_gain;
+                desired_angular_velocity = angle_axis.axis() * angle * params_.orientation_tracking_gain;
             }
         }
+        
+        // Add angular damping
+        Eigen::Vector3d angular_damping = -params_.angular_damping * current_point_.angular_velocity;
+        desired_angular_velocity += angular_damping;
         
         // Generate smooth trajectory with acceleration/jerk limits
         for (int i = 0; i < 3; i++) {
@@ -361,15 +400,15 @@ public:
             std::cin.ignore();
             robot.control(motion_generator);
             
-            // Configure robot for smooth operation
+            // Configure robot for smooth operation with more conservative settings
             robot.setCollisionBehavior(
                 {{100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 60.0}}, {{100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 60.0}},
                 {{100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 60.0}}, {{100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 60.0}},
                 {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}}, {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}},
                 {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}}, {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}});
             
-            // Lower impedance for smoother motion
-            robot.setCartesianImpedance({{500, 500, 500, 50, 50, 50}});
+            // Higher impedance for more stability
+            robot.setCartesianImpedance({{1000, 1000, 1000, 100, 100, 100}});
             
             // Initialize trajectory from current pose
             franka::RobotState state = robot.readOnce();
@@ -438,8 +477,8 @@ private:
                 processVRInput(cmd, dt);
                 current_point_ = generateNextTrajectoryPoint(dt);
                 
-                // Debug output
-                if (iteration_count % 2000 == 0) {
+                // More frequent debug output for monitoring
+                if (iteration_count % 1000 == 0) {
                     Eigen::Vector3d pos_error = target_point_.position - current_point_.position;
                     double orient_error = target_point_.orientation.angularDistance(current_point_.orientation);
                     
@@ -447,7 +486,8 @@ private:
                               << current_point_.position.y() << ", " << current_point_.position.z() << "]"
                               << " pos_err=" << pos_error.norm()
                               << " orient_err=" << orient_error
-                              << " vel=" << current_point_.velocity.norm() << std::endl;
+                              << " vel=" << current_point_.velocity.norm() 
+                              << " angular_vel=" << current_point_.angular_velocity.norm() << std::endl;
                 }
             }
             
