@@ -59,12 +59,12 @@ private:
     {
         // Motion limits - very conservative for stability
         double max_velocity = 0.05;             // 5cm/s
-        double max_acceleration = 0.03;         // 3cm/s²
+        double max_acceleration = 0.015;         // 1.5cm/s²
         double max_angular_velocity = 0.1;      // 0.1 rad/s (~6 deg/s)
-        double max_angular_acceleration = 0.05; // 0.05 rad/s²
+        double max_angular_acceleration = 0.02; // 0.02 rad/s²
 
         // VR mapping parameters
-        double position_responsiveness = 0.3;    // How quickly to respond to VR changes
+        double position_responsiveness = 0.25;    // How quickly to respond to VR changes
         double orientation_responsiveness = 0.2; // How quickly to respond to VR orientation
         double vr_smoothing = 0.8;               // Heavy VR input smoothing
 
