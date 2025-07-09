@@ -20,7 +20,7 @@ class VRToRobotConverter(Node):
         self.declare_parameter('vr_udp_port', 9999)
         self.declare_parameter('robot_udp_ip', '192.168.18.1')
         self.declare_parameter('robot_udp_port', 8888)
-        self.declare_parameter('smoothing_factor', 0.4)
+        self.declare_parameter('smoothing_factor', 0.1)
         self.declare_parameter('control_rate', 50.0)  # Hz
         
         # Get parameters

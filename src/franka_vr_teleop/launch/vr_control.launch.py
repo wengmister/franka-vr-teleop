@@ -51,7 +51,7 @@ def generate_launch_description():
 
     smoothing_factor_arg = DeclareLaunchArgument(
         'smoothing_factor',
-        default_value='0.4',
+        default_value='0.1',
         description='Default smoothing factor'
     )
 
