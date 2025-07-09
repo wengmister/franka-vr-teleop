@@ -1,0 +1,7 @@
+# ROS2 artifacts
+/build
+/log
+/install
+
+# build artifacts
+/vr_robot_client/build/
