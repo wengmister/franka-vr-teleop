@@ -313,10 +313,12 @@ private:
 
             // Orientation interpolation
             double angle_error = interpolated_target_orientation_.angularDistance(vr_target_orientation_);
-            if (angle_error > 1e-6)
-            {
-                double step_angle = std::min(max_step_angle / angle_error, 1.0);
-                interpolated_target_orientation_ = interpolated_target_orientation_.slerp(step_angle, vr_target_orientation_);
+            if (angle_error > 1e-6) {
+                // Limit the angular step size (same logic as position)
+                double step_angle = std::min(max_step_angle, angle_error);
+                double slerp_fraction = step_angle / angle_error;
+                
+                interpolated_target_orientation_ = interpolated_target_orientation_.slerp(slerp_fraction, vr_target_orientation_);
             }
 
             // The P-controller for the interpolated target.
