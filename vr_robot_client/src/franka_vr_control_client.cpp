@@ -40,6 +40,8 @@ private:
     // Simplified parameters for VR mapping
     struct VRParams
     {
+        double position_gain = 0.0001; // control gain for position contorl
+        double orientation_gain = 0.0001; // control gain for orientation control
         double vr_smoothing = 0.9; // Smoothing of incoming VR data (increased for smoother targets)
 
         // Deadzones to prevent drift from small sensor noise
@@ -296,9 +298,8 @@ private:
 
             // Calculate the next command as a small step towards the ultimate target.
             // This is a P-controller that ensures smooth, stable motion.
-            const double gain = 0.0001; // A small gain is crucial for stability in a 1kHz loop.
-            Eigen::Vector3d next_position = current_position + gain * (target_position_ - current_position);
-            Eigen::Quaterniond next_orientation = current_orientation.slerp(gain, target_orientation_);
+            Eigen::Vector3d next_position = current_position + params_.position_gain * (target_position_ - current_position);
+            Eigen::Quaterniond next_orientation = current_orientation.slerp(params_.orientation_gain, target_orientation_);
 
             auto pose_array = createPoseArray(next_position, next_orientation);
 
