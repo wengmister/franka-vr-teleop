@@ -1,4 +1,6 @@
-// VR-Based Cartesian Teleoperation - Simplified with Callback Control
+// VR-Based Cartesian Teleoperation - Final Version
+// Copyright (c) 2023 Franka Robotics GmbH
+// Use of this source code is governed by the Apache-2.0 license, see LICENSE
 #include <cmath>
 #include <iostream>
 #include <thread>
@@ -11,9 +13,11 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <fcntl.h>
+
 #include <franka/exception.h>
 #include <franka/robot.h>
 #include <Eigen/Dense>
+
 #include "examples_common.h"
 
 struct VRCommand
@@ -33,40 +37,29 @@ private:
     int server_socket_;
     const int PORT = 8888;
 
-    // Simplified parameters - no trajectory generation needed
+    // Simplified parameters for VR mapping
     struct VRParams
     {
-        // VR mapping parameters
-        double position_responsiveness = 0.5;    // How much robot moves per VR movement
-        double orientation_responsiveness = 0.5; // How much robot rotates per VR rotation
-        double vr_smoothing = 0.8;               // Smoothing of incoming VR data
+        double vr_smoothing = 0.9; // Smoothing of incoming VR data (increased for smoother targets)
 
-        // Target smoothing - smooth target changes
-        double target_position_smoothing = 0.9;
-        double target_orientation_smoothing = 0.9;
-
-        // Deadzones
+        // Deadzones to prevent drift from small sensor noise
         double position_deadzone = 0.002;   // 2mm
         double orientation_deadzone = 0.03; // ~1.7 degrees
 
-        // Workspace limits
-        double max_position_offset = 0.15;    // 15cm from initial position
-        double max_orientation_offset = 0.25; // ~14 degrees from initial orientation
+        // Workspace limits to keep the robot in a safe area
+        double max_position_offset = 0.25;  // 25cm from initial position
+        double max_orientation_offset = 0.5; // ~28 degrees from initial orientation
     } params_;
 
-    // Current targets
+    // The ultimate target pose, determined by VR mapping
     Eigen::Vector3d target_position_;
     Eigen::Quaterniond target_orientation_;
 
-    // Smoothed targets to prevent sudden jumps
-    Eigen::Vector3d smoothed_target_position_;
-    Eigen::Quaterniond smoothed_target_orientation_;
-
-    // VR filtering
+    // VR filtering state
     Eigen::Vector3d filtered_vr_position_{0, 0, 0};
     Eigen::Quaterniond filtered_vr_orientation_{1, 0, 0, 0};
 
-    // Initial poses
+    // Initial poses used as a reference frame
     Eigen::Affine3d initial_robot_pose_;
     Eigen::Vector3d initial_vr_position_{0, 0, 0};
     Eigen::Quaterniond initial_vr_orientation_{1, 0, 0, 0};
@@ -138,8 +131,7 @@ public:
                     if (!vr_initialized_)
                     {
                         initial_vr_position_ = Eigen::Vector3d(cmd.pos_x, cmd.pos_y, cmd.pos_z);
-                        initial_vr_orientation_ = Eigen::Quaterniond(cmd.quat_w, cmd.quat_x, cmd.quat_y, cmd.quat_z);
-                        initial_vr_orientation_.normalize();
+                        initial_vr_orientation_ = Eigen::Quaterniond(cmd.quat_w, cmd.quat_x, cmd.quat_y, cmd.quat_z).normalized();
 
                         filtered_vr_position_ = initial_vr_position_;
                         filtered_vr_orientation_ = initial_vr_orientation_;
@@ -155,6 +147,7 @@ public:
     }
 
 private:
+    // This function's only job is to calculate the desired target pose from VR data.
     void updateVRTargets(const VRCommand &cmd)
     {
         if (!cmd.has_valid_data || !vr_initialized_)
@@ -167,22 +160,21 @@ private:
         Eigen::Quaterniond vr_quat(cmd.quat_w, cmd.quat_x, cmd.quat_y, cmd.quat_z);
         vr_quat.normalize();
 
-        // Heavy smoothing on VR input
+        // Smooth incoming VR data to reduce jitter
         double alpha = 1.0 - params_.vr_smoothing;
         filtered_vr_position_ = params_.vr_smoothing * filtered_vr_position_ + alpha * vr_pos;
         filtered_vr_orientation_ = filtered_vr_orientation_.slerp(alpha, vr_quat);
 
-        // Calculate deltas from initial VR pose
+        // Calculate deltas from the initial VR pose
         Eigen::Vector3d vr_pos_delta = filtered_vr_position_ - initial_vr_position_;
         Eigen::Quaterniond vr_quat_delta = filtered_vr_orientation_ * initial_vr_orientation_.inverse();
 
-        // Apply deadzones
+        // Apply deadzones to prevent drift
         if (vr_pos_delta.norm() < params_.position_deadzone)
         {
             vr_pos_delta.setZero();
         }
-
-        double rotation_angle = 2.0 * std::acos(std::abs(vr_quat_delta.w()));
+        double rotation_angle = 2.0 * acos(std::abs(vr_quat_delta.w()));
         if (rotation_angle < params_.orientation_deadzone)
         {
             vr_quat_delta.setIdentity();
@@ -193,7 +185,6 @@ private:
         {
             vr_pos_delta = vr_pos_delta.normalized() * params_.max_position_offset;
         }
-
         if (rotation_angle > params_.max_orientation_offset)
         {
             Eigen::AngleAxisd axis_angle(vr_quat_delta);
@@ -201,25 +192,10 @@ private:
             vr_quat_delta = Eigen::Quaterniond(Eigen::AngleAxisd(axis_angle.angle() * scale, axis_angle.axis()));
         }
 
-        // Calculate raw targets
-        Eigen::Vector3d raw_target_position = initial_robot_pose_.translation() + 
-                                            vr_pos_delta * params_.position_responsiveness;
-        Eigen::Quaterniond raw_target_orientation = vr_quat_delta * Eigen::Quaterniond(initial_robot_pose_.rotation());
-        raw_target_orientation.normalize();
-
-        // Smooth target changes to prevent sudden jumps
-        double pos_smooth = params_.target_position_smoothing;
-        double orient_smooth = params_.target_orientation_smoothing;
-
-        smoothed_target_position_ = pos_smooth * smoothed_target_position_ +
-                                    (1.0 - pos_smooth) * raw_target_position;
-
-        smoothed_target_orientation_ = smoothed_target_orientation_.slerp(1.0 - orient_smooth, raw_target_orientation);
-        smoothed_target_orientation_.normalize();
-
-        // Use smoothed targets
-        target_position_ = smoothed_target_position_;
-        target_orientation_ = smoothed_target_orientation_;
+        // Calculate the final target pose with a 1-to-1 mapping
+        target_position_ = initial_robot_pose_.translation() + vr_pos_delta;
+        target_orientation_ = vr_quat_delta * Eigen::Quaterniond(initial_robot_pose_.rotation());
+        target_orientation_.normalize();
     }
 
     std::array<double, 16> createPoseArray(const Eigen::Vector3d& position, const Eigen::Quaterniond& orientation)
@@ -233,22 +209,15 @@ private:
         return pose_array;
     }
 
-    void initializeSmoothedTargets()
-    {
-        smoothed_target_position_ = target_position_;
-        smoothed_target_orientation_ = target_orientation_;
-    }
-
 public:
     void run(const std::string &robot_ip)
     {
         try
         {
-            std::cout << "Connecting to robot at " << robot_ip << std::endl;
             franka::Robot robot(robot_ip);
             setDefaultBehavior(robot);
 
-            // Move to initial configuration
+            // Move to a suitable starting joint configuration
             std::array<double, 7> q_goal = {{60.0 * M_PI / 180.0,
                                              -55.0 * M_PI / 180.0,
                                              -70.0 * M_PI / 180.0,
@@ -257,27 +226,28 @@ public:
                                              160.0 * M_PI / 180.0,
                                              30.0 * M_PI / 180.0}};
             MotionGenerator motion_generator(0.5, q_goal);
-            std::cout << "WARNING: This example will move the robot!" << std::endl
+            std::cout << "WARNING: This example will move the robot! "
+                      << "Please make sure to have the user stop button at hand!" << std::endl
                       << "Press Enter to continue..." << std::endl;
             std::cin.ignore();
             robot.control(motion_generator);
+            std::cout << "Finished moving to initial joint configuration." << std::endl;
 
-            // Set collision behavior - more conservative than example
+            // Collision behavior
             robot.setCollisionBehavior(
-                {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}}, {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}},
-                {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}}, {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}},
-                {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}}, {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}},
-                {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}}, {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}});
+                {{100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 60.0}}, {{100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 60.0}},
+                {{100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 60.0}}, {{100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 60.0}},
+                {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}}, {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}},
+                {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}}, {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}});
 
-            // Initialize from current pose
+            // Moderate impedance for smooth motion
+            robot.setCartesianImpedance({{1000, 1000, 1000, 100, 100, 100}});
+
+            // Initialize poses from the robot's current state
             franka::RobotState state = robot.readOnce();
-            initial_robot_pose_ = Eigen::Affine3d(Eigen::Matrix4d::Map(state.O_T_EE_d.data()));
-
+            initial_robot_pose_ = Eigen::Affine3d(Eigen::Matrix4d::Map(state.O_T_EE.data())); // Use measured pose
             target_position_ = initial_robot_pose_.translation();
             target_orientation_ = Eigen::Quaterniond(initial_robot_pose_.rotation());
-
-            // Initialize smoothed targets
-            initializeSmoothedTargets();
 
             std::thread network_thread(&SimplifiedVRController::networkThread, this);
 
@@ -289,16 +259,16 @@ public:
 
             if (vr_initialized_)
             {
-                std::cout << "VR initialized! Starting active control..." << std::endl;
+                std::cout << "VR initialized! Starting active control." << std::endl;
                 this->runVRControl(robot);
             }
 
             running_ = false;
-            network_thread.join();
+            if(network_thread.joinable()) network_thread.join();
         }
         catch (const franka::Exception &e)
         {
-            std::cout << "Franka exception: " << e.what() << std::endl;
+            std::cerr << "Franka exception: " << e.what() << std::endl;
             running_ = false;
         }
     }
@@ -306,79 +276,46 @@ public:
 private:
     void runVRControl(franka::Robot &robot)
     {
-        std::cout << "Starting VR control..." << std::endl;
-
-        try
-        {
-            robot.automaticErrorRecovery();
-        }
-        catch (const franka::Exception &e)
-        {
-            std::cout << "Error recovery: " << e.what() << std::endl;
-        }
-
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-
-        int iteration_count = 0;
-
-        // Callback-based control (simpler approach)
-        auto vr_control_callback = [this, &iteration_count](
-                                      const franka::RobotState& robot_state,
-                                      franka::Duration period) -> franka::CartesianPose {
-            iteration_count++;
-
-            // Get current VR command
+        auto vr_control_callback = [this](
+                                    const franka::RobotState& robot_state,
+                                    franka::Duration period) -> franka::CartesianPose {
             VRCommand cmd;
             {
                 std::lock_guard<std::mutex> lock(command_mutex_);
                 cmd = current_vr_command_;
             }
 
-            // Update VR targets
-            if (vr_initialized_)
-            {
-                updateVRTargets(cmd);
-            }
+            // Calculate the ultimate target pose based on the latest VR data
+            updateVRTargets(cmd);
+            
+            // Get the robot's last commanded pose
+            Eigen::Map<const Eigen::Matrix4d> pose_map(robot_state.O_T_EE_c.data());
+            Eigen::Affine3d current_transform(pose_map);
+            Eigen::Vector3d current_position = current_transform.translation();
+            Eigen::Quaterniond current_orientation(current_transform.linear());
 
-            // Debug output
-            if (iteration_count % 1000 == 0)
-            {
-                Eigen::Vector3d current_pos = Eigen::Vector3d::Map(robot_state.O_T_EE_c.data() + 12);
-                Eigen::Vector3d pos_error = target_position_ - current_pos;
-                
-                std::cout << "VR Control:" << std::endl
-                          << "  Target pos: [" << target_position_.x() << ", " 
-                          << target_position_.y() << ", " << target_position_.z() << "]" << std::endl
-                          << "  Current pos: [" << current_pos.x() << ", " 
-                          << current_pos.y() << ", " << current_pos.z() << "]" << std::endl
-                          << "  Position error: " << pos_error.norm() << " m" << std::endl;
-            }
+            // Calculate the next command as a small step towards the ultimate target.
+            // This is a P-controller that ensures smooth, stable motion.
+            const double gain = 0.0001; // A small gain is crucial for stability in a 1kHz loop.
+            Eigen::Vector3d next_position = current_position + gain * (target_position_ - current_position);
+            Eigen::Quaterniond next_orientation = current_orientation.slerp(gain, target_orientation_);
 
-            // Create and return pose array from current targets
-            auto pose_array = createPoseArray(target_position_, target_orientation_);
+            auto pose_array = createPoseArray(next_position, next_orientation);
 
-            // Check if we should stop (you can add conditions here)
             if (!running_)
             {
                 return franka::MotionFinished(pose_array);
             }
-
             return pose_array;
         };
 
         try
         {
-            std::cout << "VR control started. Use VR to control the robot. Press Ctrl+C to stop." << std::endl;
             robot.control(vr_control_callback);
-            std::cout << "VR control finished." << std::endl;
         }
         catch (const franka::ControlException &e)
         {
-            std::cout << "VR control exception: " << e.what() << std::endl;
-        }
-        catch (const franka::Exception &e)
-        {
-            std::cout << "Franka exception during VR control: " << e.what() << std::endl;
+            std::cerr << "VR control exception: " << e.what() << std::endl;
         }
     }
 };
@@ -394,6 +331,8 @@ int main(int argc, char **argv)
     try
     {
         SimplifiedVRController controller;
+        // Add a signal handler to gracefully shut down on Ctrl+C
+        // std::signal(SIGINT, [](int signum){ controller.stop(); }); // Example, needs a stop() method
         controller.run(argv[1]);
     }
     catch (const std::exception &e)
