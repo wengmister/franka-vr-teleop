@@ -1,4 +1,4 @@
-// VR-Based Cartesian Teleoperation - Simplified with Active Control
+// VR-Based Cartesian Teleoperation - Simplified with Callback Control
 #include <cmath>
 #include <iostream>
 #include <thread>
@@ -13,8 +13,6 @@
 #include <fcntl.h>
 #include <franka/exception.h>
 #include <franka/robot.h>
-#include <franka/active_control.h>
-#include <franka/active_motion_generator.h>
 #include <Eigen/Dense>
 #include "examples_common.h"
 
@@ -292,7 +290,7 @@ public:
             if (vr_initialized_)
             {
                 std::cout << "VR initialized! Starting active control..." << std::endl;
-                this->runActiveControl(robot);
+                this->runVRControl(robot);
             }
 
             running_ = false;
@@ -306,9 +304,9 @@ public:
     }
 
 private:
-    void runActiveControl(franka::Robot &robot)
+    void runVRControl(franka::Robot &robot)
     {
-        std::cout << "Starting VR active control..." << std::endl;
+        std::cout << "Starting VR control..." << std::endl;
 
         try
         {
@@ -321,72 +319,66 @@ private:
 
         std::this_thread::sleep_for(std::chrono::seconds(1));
 
-        try
-        {
-            int iteration_count = 0;
-            bool motion_finished = false;
-            
-            // Start active control
-            auto active_control = robot.startCartesianPoseControl(
-                research_interface::robot::Move::ControllerMode::kJointImpedance);
+        int iteration_count = 0;
 
-            std::cout << "Active control started. Use VR to control the robot. Press Ctrl+C to stop." << std::endl;
+        // Callback-based control (simpler approach)
+        auto vr_control_callback = [this, &iteration_count](
+                                      const franka::RobotState& robot_state,
+                                      franka::Duration period) -> franka::CartesianPose {
+            iteration_count++;
 
-            while (!motion_finished && running_)
+            // Get current VR command
+            VRCommand cmd;
             {
-                // Read robot state
-                auto read_result = active_control->readOnce();
-                auto robot_state = read_result.first;
-                auto duration = read_result.second;
-
-                iteration_count++;
-
-                // Get current VR command
-                VRCommand cmd;
-                {
-                    std::lock_guard<std::mutex> lock(command_mutex_);
-                    cmd = current_vr_command_;
-                }
-
-                // Update VR targets
-                if (vr_initialized_)
-                {
-                    updateVRTargets(cmd);
-                }
-
-                // Create pose array from current targets
-                auto pose_array = createPoseArray(target_position_, target_orientation_);
-
-                // Debug output
-                if (iteration_count % 1000 == 0)
-                {
-                    Eigen::Vector3d current_pos = Eigen::Vector3d::Map(&robot_state.O_T_EE_c[12]);
-                    Eigen::Vector3d pos_error = target_position_ - current_pos;
-                    
-                    std::cout << "VR Active Control:" << std::endl
-                              << "  Target pos: [" << target_position_.x() << ", " 
-                              << target_position_.y() << ", " << target_position_.z() << "]" << std::endl
-                              << "  Current pos: [" << current_pos.x() << ", " 
-                              << current_pos.y() << ", " << current_pos.z() << "]" << std::endl
-                              << "  Position error: " << pos_error.norm() << " m" << std::endl;
-                }
-
-                // Send command to robot
-                active_control->writeOnce(pose_array);
-
-                // You can add a condition here to finish motion if needed
-                // For now, it runs until the program is stopped
+                std::lock_guard<std::mutex> lock(command_mutex_);
+                cmd = current_vr_command_;
             }
 
-            std::cout << "VR active control finished." << std::endl;
+            // Update VR targets
+            if (vr_initialized_)
+            {
+                updateVRTargets(cmd);
+            }
+
+            // Debug output
+            if (iteration_count % 1000 == 0)
+            {
+                Eigen::Vector3d current_pos = Eigen::Vector3d::Map(robot_state.O_T_EE_c.data() + 12);
+                Eigen::Vector3d pos_error = target_position_ - current_pos;
+                
+                std::cout << "VR Control:" << std::endl
+                          << "  Target pos: [" << target_position_.x() << ", " 
+                          << target_position_.y() << ", " << target_position_.z() << "]" << std::endl
+                          << "  Current pos: [" << current_pos.x() << ", " 
+                          << current_pos.y() << ", " << current_pos.z() << "]" << std::endl
+                          << "  Position error: " << pos_error.norm() << " m" << std::endl;
+            }
+
+            // Create and return pose array from current targets
+            auto pose_array = createPoseArray(target_position_, target_orientation_);
+
+            // Check if we should stop (you can add conditions here)
+            if (!running_)
+            {
+                return franka::MotionFinished(pose_array);
+            }
+
+            return pose_array;
+        };
+
+        try
+        {
+            std::cout << "VR control started. Use VR to control the robot. Press Ctrl+C to stop." << std::endl;
+            robot.control(vr_control_callback);
+            std::cout << "VR control finished." << std::endl;
         }
         catch (const franka::ControlException &e)
         {
-            std::cout << "VR active control exception: " << e.what() << std::endl;
+            std::cout << "VR control exception: " << e.what() << std::endl;
         }
         catch (const franka::Exception &e)
         {
-            std::cout << "Franka exception during active control: " << e.what() << std::endl;
+            std::cout << "Franka exception during VR control: " << e.what() << std::endl;
         }
     }
 };
