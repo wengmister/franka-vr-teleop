@@ -40,7 +40,7 @@ private:
     // Simplified parameters for VR mapping
     struct VRParams
     {
-        double position_gain = 0.0015;    // control gain for position contorl
+        double position_gain = 0.0018;    // control gain for position contorl
         double orientation_gain = 0.0015; // control gain for orientation control
         double vr_smoothing = 0.1;        // Smoothing of incoming VR data
 
@@ -49,8 +49,8 @@ private:
         double orientation_deadzone = 0.03; // ~1.7 degrees
 
         // Interpolation max step size
-        double max_interp_position_step = 0.2; // 0.2m/s
-        double max_interp_orientation_step = 0.5; // 0.5rad/s
+        double max_interp_position_step = 0.3; // 0.3m/s
+        double max_interp_orientation_step = 0.6; // 0.6rad/s
 
         // Workspace limits to keep the robot in a safe area
         double max_position_offset = 0.6;   // 60cm from initial position
