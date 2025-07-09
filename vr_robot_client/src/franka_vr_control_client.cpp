@@ -62,29 +62,29 @@ private:
     struct TrajParams
     {
         // Motion limits - conservative values for stability
-        double max_velocity = 0.05;             // 5cm/s
-        double max_acceleration = 0.015;        // 1.5cm/s²
-        double max_jerk = 0.05;                 // 5cm/s³ - NEW: jerk limit
+        double max_velocity = 0.8;             // 5cm/s
+        double max_acceleration = 0.04;        // 1.5cm/s²
+        double max_jerk = 0.01;                 // 5cm/s³ - NEW: jerk limit
         double max_angular_velocity = 0.1;      // 0.1 rad/s (~6 deg/s)
-        double max_angular_acceleration = 0.02; // 0.02 rad/s²
-        double max_angular_jerk = 0.1;          // 0.1 rad/s³ - NEW: angular jerk limit
+        double max_angular_acceleration = 0.04; // 0.02 rad/s²
+        double max_angular_jerk = 0.02;          // 0.1 rad/s³ - NEW: angular jerk limit
 
         // VR mapping parameters - reduced for stability
-        double position_responsiveness = 0.2;    // Reduced from 0.2
-        double orientation_responsiveness = 0.2; // Reduced from 0.2
-        double vr_smoothing = 0.9;                // Increased from 0.8
+        double position_responsiveness = 0.3;    // Reduced from 0.25
+        double orientation_responsiveness = 0.2; // Reduced from 0.25
+        double vr_smoothing = 0.8;                // Increased from 0.8
 
         // Target smoothing - NEW: smooth target changes
-        double target_position_smoothing = 0.95;
-        double target_orientation_smoothing = 0.95;
+        double target_position_smoothing = 0.8;
+        double target_orientation_smoothing = 0.8;
 
         // Deadzones
         double position_deadzone = 0.002;   // 2mm
         double orientation_deadzone = 0.03; // ~1.7 degrees
 
         // Workspace limits
-        double max_position_offset = 0.15;    // 15cm from initial position
-        double max_orientation_offset = 0.25; // ~14 degrees from initial orientation
+        double max_position_offset = 0.8;    // 15cm from initial position
+        double max_orientation_offset = 0.8; // ~14 degrees from initial orientation
     } params_;
 
     // State
@@ -509,7 +509,7 @@ private:
                 current_state_ = generateNextState(dt);
 
                 // Enhanced debug output
-                if (iteration_count % 2000 == 0)
+                if (iteration_count % 100 == 0)
                 {
                     Eigen::Vector3d pos_error = target_position_ - current_state_.position;
                     Eigen::Quaterniond orient_error = target_orientation_ * current_state_.orientation.inverse();
