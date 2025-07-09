@@ -56,11 +56,11 @@ private:
         double max_position_offset = 0.6;   // 60cm from initial position
     } params_;
 
-    // NEW: Rename target_... to vr_target_... to clarify it's the goal from VR.
+    // Rename target_... to vr_target_... to clarify it's the goal from VR.
     Eigen::Vector3d vr_target_position_;
     Eigen::Quaterniond vr_target_orientation_;
 
-    // NEW: This is the smooth target that updates at 1kHz.
+    // This is the smooth target that updates at 1kHz.
     Eigen::Vector3d interpolated_target_position_;
     Eigen::Quaterniond interpolated_target_orientation_;
 
@@ -289,7 +289,7 @@ private:
                                        const franka::RobotState &robot_state,
                                        franka::Duration period) -> franka::CartesianPose
         {
-            // --- Part 1: Update the ultimate goal from VR (at 50Hz) ---
+            //Update the ultimate goal from VR (~ 50Hz)
             VRCommand cmd;
             {
                 std::lock_guard<std::mutex> lock(command_mutex_);
@@ -297,9 +297,7 @@ private:
             }
             updateVRTargets(cmd);
 
-            // --- Part 2: The Interpolator (updates at 1kHz) ---
             // Move the interpolated target a small step towards the ultimate VR target.
-
             // Define max speeds for the interpolated target
             const double max_step_distance = params_.max_interp_position_step * period.toSec();
             const double max_step_angle = params_.max_interp_orientation_step * period.toSec();
@@ -321,8 +319,7 @@ private:
                 interpolated_target_orientation_ = interpolated_target_orientation_.slerp(step_angle, vr_target_orientation_);
             }
 
-            // --- Part 3: The P-Controller (updates at 1kHz) ---
-            // The P-controller now smoothly follows the interpolated target.
+            // The P-controller for the interpolated target.
             Eigen::Map<const Eigen::Matrix4d> pose_map(robot_state.O_T_EE_c.data());
             Eigen::Affine3d current_transform(pose_map);
             Eigen::Vector3d current_position = current_transform.translation();
