@@ -40,17 +40,20 @@ private:
     // Simplified parameters for VR mapping
     struct VRParams
     {
-        double position_gain = 0.001;    // control gain for position contorl
-        double orientation_gain = 0.001; // control gain for orientation control
-        double vr_smoothing = 0.8;        // Smoothing of incoming VR data (increased for smoother targets)
+        double position_gain = 0.0015;    // control gain for position contorl
+        double orientation_gain = 0.0015; // control gain for orientation control
+        double vr_smoothing = 0.1;        // Smoothing of incoming VR data
 
         // Deadzones to prevent drift from small sensor noise
-        double position_deadzone = 0.002;   // 2mm
+        double position_deadzone = 0.001;   // 1mm
         double orientation_deadzone = 0.03; // ~1.7 degrees
 
+        // Interpolation max step size
+        double max_interp_position_step = 0.2; // 0.2m/s
+        double max_interp_orientation_step = 0.5; // 0.5rad/s
+
         // Workspace limits to keep the robot in a safe area
-        double max_position_offset = 0.25;   // 25cm from initial position
-        double max_orientation_offset = 0.5; // ~28 degrees from initial orientation
+        double max_position_offset = 0.6;   // 60cm from initial position
     } params_;
 
     // NEW: Rename target_... to vr_target_... to clarify it's the goal from VR.
@@ -191,14 +194,8 @@ private:
         {
             vr_pos_delta = vr_pos_delta.normalized() * params_.max_position_offset;
         }
-        if (rotation_angle > params_.max_orientation_offset)
-        {
-            Eigen::AngleAxisd axis_angle(vr_quat_delta);
-            double scale = params_.max_orientation_offset / rotation_angle;
-            vr_quat_delta = Eigen::Quaterniond(Eigen::AngleAxisd(axis_angle.angle() * scale, axis_angle.axis()));
-        }
 
-        // The final calculation just updates the vr_target_... variables
+        // The final calculation just updates the vr_target_
         vr_target_position_ = initial_robot_pose_.translation() + vr_pos_delta;
         vr_target_orientation_ = vr_quat_delta * Eigen::Quaterniond(initial_robot_pose_.rotation());
         vr_target_orientation_.normalize();
@@ -304,8 +301,8 @@ private:
             // Move the interpolated target a small step towards the ultimate VR target.
 
             // Define max speeds for the interpolated target
-            const double max_step_distance = 0.2 * period.toSec(); // Max speed: 0.2 m/s
-            const double max_step_angle = 0.5 * period.toSec();    // Max angular speed: 0.5 rad/s (~29 deg/s)
+            const double max_step_distance = params_.max_interp_position_step * period.toSec();
+            const double max_step_angle = params_.max_interp_orientation_step * period.toSec();
 
             // Position interpolation
             Eigen::Vector3d pos_error = vr_target_position_ - interpolated_target_position_;
