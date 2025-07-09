@@ -40,22 +40,26 @@ private:
     // Simplified parameters for VR mapping
     struct VRParams
     {
-        double position_gain = 0.0001; // control gain for position contorl
-        double orientation_gain = 0.0001; // control gain for orientation control
-        double vr_smoothing = 0.9; // Smoothing of incoming VR data (increased for smoother targets)
+        double position_gain = 0.001;    // control gain for position contorl
+        double orientation_gain = 0.001; // control gain for orientation control
+        double vr_smoothing = 0.8;        // Smoothing of incoming VR data (increased for smoother targets)
 
         // Deadzones to prevent drift from small sensor noise
         double position_deadzone = 0.002;   // 2mm
         double orientation_deadzone = 0.03; // ~1.7 degrees
 
         // Workspace limits to keep the robot in a safe area
-        double max_position_offset = 0.25;  // 25cm from initial position
+        double max_position_offset = 0.25;   // 25cm from initial position
         double max_orientation_offset = 0.5; // ~28 degrees from initial orientation
     } params_;
 
-    // The ultimate target pose, determined by VR mapping
-    Eigen::Vector3d target_position_;
-    Eigen::Quaterniond target_orientation_;
+    // NEW: Rename target_... to vr_target_... to clarify it's the goal from VR.
+    Eigen::Vector3d vr_target_position_;
+    Eigen::Quaterniond vr_target_orientation_;
+
+    // NEW: This is the smooth target that updates at 1kHz.
+    Eigen::Vector3d interpolated_target_position_;
+    Eigen::Quaterniond interpolated_target_orientation_;
 
     // VR filtering state
     Eigen::Vector3d filtered_vr_position_{0, 0, 0};
@@ -194,18 +198,18 @@ private:
             vr_quat_delta = Eigen::Quaterniond(Eigen::AngleAxisd(axis_angle.angle() * scale, axis_angle.axis()));
         }
 
-        // Calculate the final target pose with a 1-to-1 mapping
-        target_position_ = initial_robot_pose_.translation() + vr_pos_delta;
-        target_orientation_ = vr_quat_delta * Eigen::Quaterniond(initial_robot_pose_.rotation());
-        target_orientation_.normalize();
+        // The final calculation just updates the vr_target_... variables
+        vr_target_position_ = initial_robot_pose_.translation() + vr_pos_delta;
+        vr_target_orientation_ = vr_quat_delta * Eigen::Quaterniond(initial_robot_pose_.rotation());
+        vr_target_orientation_.normalize();
     }
 
-    std::array<double, 16> createPoseArray(const Eigen::Vector3d& position, const Eigen::Quaterniond& orientation)
+    std::array<double, 16> createPoseArray(const Eigen::Vector3d &position, const Eigen::Quaterniond &orientation)
     {
         Eigen::Affine3d pose;
         pose.translation() = position;
         pose.linear() = orientation.toRotationMatrix();
-        
+
         std::array<double, 16> pose_array;
         Eigen::Map<Eigen::Matrix4d>(pose_array.data()) = pose.matrix();
         return pose_array;
@@ -247,9 +251,14 @@ public:
 
             // Initialize poses from the robot's current state
             franka::RobotState state = robot.readOnce();
-            initial_robot_pose_ = Eigen::Affine3d(Eigen::Matrix4d::Map(state.O_T_EE.data())); // Use measured pose
-            target_position_ = initial_robot_pose_.translation();
-            target_orientation_ = Eigen::Quaterniond(initial_robot_pose_.rotation());
+            initial_robot_pose_ = Eigen::Affine3d(Eigen::Matrix4d::Map(state.O_T_EE.data()));
+
+            // Initialize all targets to the robot's starting pose
+            vr_target_position_ = initial_robot_pose_.translation();
+            interpolated_target_position_ = initial_robot_pose_.translation();
+
+            vr_target_orientation_ = Eigen::Quaterniond(initial_robot_pose_.rotation());
+            interpolated_target_orientation_ = Eigen::Quaterniond(initial_robot_pose_.rotation());
 
             std::thread network_thread(&SimplifiedVRController::networkThread, this);
 
@@ -266,7 +275,8 @@ public:
             }
 
             running_ = false;
-            if(network_thread.joinable()) network_thread.join();
+            if (network_thread.joinable())
+                network_thread.join();
         }
         catch (const franka::Exception &e)
         {
@@ -279,27 +289,53 @@ private:
     void runVRControl(franka::Robot &robot)
     {
         auto vr_control_callback = [this](
-                                    const franka::RobotState& robot_state,
-                                    franka::Duration period) -> franka::CartesianPose {
+                                       const franka::RobotState &robot_state,
+                                       franka::Duration period) -> franka::CartesianPose
+        {
+            // --- Part 1: Update the ultimate goal from VR (at 50Hz) ---
             VRCommand cmd;
             {
                 std::lock_guard<std::mutex> lock(command_mutex_);
                 cmd = current_vr_command_;
             }
-
-            // Calculate the ultimate target pose based on the latest VR data
             updateVRTargets(cmd);
-            
-            // Get the robot's last commanded pose
+
+            // --- Part 2: The Interpolator (updates at 1kHz) ---
+            // Move the interpolated target a small step towards the ultimate VR target.
+
+            // Define max speeds for the interpolated target
+            const double max_step_distance = 0.2 * period.toSec(); // Max speed: 0.2 m/s
+            const double max_step_angle = 0.5 * period.toSec();    // Max angular speed: 0.5 rad/s (~29 deg/s)
+
+            // Position interpolation
+            Eigen::Vector3d pos_error = vr_target_position_ - interpolated_target_position_;
+            double distance = pos_error.norm();
+            if (distance > 1e-6)
+            { // Avoid normalization of zero vector
+                double step_distance = std::min(max_step_distance, distance);
+                interpolated_target_position_ += (pos_error / distance) * step_distance;
+            }
+
+            // Orientation interpolation
+            double angle_error = interpolated_target_orientation_.angularDistance(vr_target_orientation_);
+            if (angle_error > 1e-6)
+            {
+                double step_angle = std::min(max_step_angle / angle_error, 1.0);
+                interpolated_target_orientation_ = interpolated_target_orientation_.slerp(step_angle, vr_target_orientation_);
+            }
+
+            // --- Part 3: The P-Controller (updates at 1kHz) ---
+            // The P-controller now smoothly follows the interpolated target.
             Eigen::Map<const Eigen::Matrix4d> pose_map(robot_state.O_T_EE_c.data());
             Eigen::Affine3d current_transform(pose_map);
             Eigen::Vector3d current_position = current_transform.translation();
             Eigen::Quaterniond current_orientation(current_transform.linear());
 
-            // Calculate the next command as a small step towards the ultimate target.
-            // This is a P-controller that ensures smooth, stable motion.
-            Eigen::Vector3d next_position = current_position + params_.position_gain * (target_position_ - current_position);
-            Eigen::Quaterniond next_orientation = current_orientation.slerp(params_.orientation_gain, target_orientation_);
+            const double position_gain = params_.position_gain;
+            const double orientation_gain = params_.orientation_gain;
+
+            Eigen::Vector3d next_position = current_position + position_gain * (interpolated_target_position_ - current_position);
+            Eigen::Quaterniond next_orientation = current_orientation.slerp(orientation_gain, interpolated_target_orientation_);
 
             auto pose_array = createPoseArray(next_position, next_orientation);
 
