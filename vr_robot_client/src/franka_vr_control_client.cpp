@@ -1,4 +1,4 @@
-// VR-Based Cartesian Teleoperation - Final Version
+// VR-Based Cartesian Teleoperation with Automatic Error Recovery
 // Copyright (c) 2023 Franka Robotics GmbH
 // Use of this source code is governed by the Apache-2.0 license, see LICENSE
 #include <cmath>
@@ -13,6 +13,8 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <csignal>
+#include <limits>
 
 #include <franka/exception.h>
 #include <franka/robot.h>
@@ -31,16 +33,25 @@ class SimplifiedVRController
 {
 private:
     std::atomic<bool> running_{true};
+    std::atomic<bool> should_stop_{false};
     VRCommand current_vr_command_;
     std::mutex command_mutex_;
 
     int server_socket_;
     const int PORT = 8888;
 
+    // Error recovery parameters
+    struct ErrorRecoveryParams
+    {
+        int max_recovery_attempts = 3;
+        int recovery_delay_ms = 1000;
+        bool enable_auto_recovery = true;
+    } recovery_params_;
+
     // Simplified parameters for VR mapping
     struct VRParams
     {
-        double position_gain = 0.0020;    // control gain for position contorl
+        double position_gain = 0.0020;    // control gain for position control
         double orientation_gain = 0.0018; // control gain for orientation control
         double vr_smoothing = 0.1;        // Smoothing of incoming VR data
 
@@ -84,6 +95,12 @@ public:
     {
         running_ = false;
         close(server_socket_);
+    }
+
+    void stop()
+    {
+        should_stop_ = true;
+        running_ = false;
     }
 
     void setupNetworking()
@@ -156,6 +173,100 @@ public:
     }
 
 private:
+    // Error recovery function with manual confirmation
+    bool attemptErrorRecovery(franka::Robot &robot, const franka::Exception &e, int attempt)
+    {
+        if (!recovery_params_.enable_auto_recovery)
+        {
+            return false;
+        }
+
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "ROBOT ERROR DETECTED!" << std::endl;
+        std::cout << "Error: " << e.what() << std::endl;
+        std::cout << "Recovery attempt " << attempt << "/" << recovery_params_.max_recovery_attempts << std::endl;
+        std::cout << "========================================" << std::endl;
+        
+        // Wait for manual input before attempting recovery
+        std::cout << "\nBefore attempting automatic error recovery:" << std::endl;
+        std::cout << "1. Check robot status and surroundings" << std::endl;
+        std::cout << "2. Ensure it's safe to proceed" << std::endl;
+        std::cout << "3. Press Enter to attempt recovery (or Ctrl+C to exit): ";
+        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+        std::cin.get();
+
+        try
+        {
+            std::cout << "Attempting automatic error recovery..." << std::endl;
+            
+            // Attempt automatic error recovery
+            robot.automaticErrorRecovery();
+            
+            std::cout << "✓ Automatic error recovery successful!" << std::endl;
+            
+            // Give the robot a moment to stabilize
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            
+            std::cout << "Robot ready to continue operation." << std::endl;
+            return true;
+        }
+        catch (const franka::Exception &recovery_error)
+        {
+            std::cout << "✗ Error recovery failed: " << recovery_error.what() << std::endl;
+            return false;
+        }
+    }
+
+    // Reinitialize robot settings after recovery with manual confirmation
+    void reinitializeRobotSettings(franka::Robot &robot)
+    {
+        std::cout << "\n----------------------------------------" << std::endl;
+        std::cout << "REINITIALIZING ROBOT SETTINGS" << std::endl;
+        std::cout << "----------------------------------------" << std::endl;
+        
+        std::cout << "About to reinitialize:" << std::endl;
+        std::cout << "- Collision behavior settings" << std::endl;
+        std::cout << "- Cartesian impedance settings" << std::endl;
+        std::cout << "- Move robot back to initial joint configuration" << std::endl;
+        std::cout << "\nPress Enter to continue with reinitialization: ";
+        std::cin.get();
+
+        try
+        {
+            std::cout << "Setting collision behavior..." << std::endl;
+            // Collision behavior
+            robot.setCollisionBehavior(
+                {{100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 60.0}}, {{100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 60.0}},
+                {{100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 60.0}}, {{100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 60.0}},
+                {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}}, {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}},
+                {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}}, {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}});
+
+            std::cout << "Setting cartesian impedance..." << std::endl;
+            // Moderate impedance for smooth motion
+            robot.setCartesianImpedance({{1000, 1000, 1000, 100, 100, 100}});
+
+            std::cout << "Moving robot back to initial joint configuration..." << std::endl;
+            // Move back to the initial joint configuration
+            std::array<double, 7> q_goal = {{60.0 * M_PI / 180.0,
+                                             -55.0 * M_PI / 180.0,
+                                             -70.0 * M_PI / 180.0,
+                                             -100.0 * M_PI / 180.0,
+                                             -30.0 * M_PI / 180.0,
+                                             160.0 * M_PI / 180.0,
+                                             30.0 * M_PI / 180.0}};
+            MotionGenerator motion_generator(0.5, q_goal);
+            robot.control(motion_generator);
+
+            std::cout << "✓ Robot settings reinitialized and moved to initial pose successfully!" << std::endl;
+        }
+        catch (const franka::Exception &e)
+        {
+            std::cout << "⚠ Warning: Could not complete reinitialization: " << e.what() << std::endl;
+            std::cout << "Press Enter to continue anyway: ";
+            std::cin.get();
+        }
+    }
+
     // This function's only job is to calculate the desired target pose from VR data.
     void updateVRTargets(const VRCommand &cmd)
     {
@@ -215,70 +326,144 @@ private:
 public:
     void run(const std::string &robot_ip)
     {
-        try
+        bool control_active = true;
+        int recovery_attempts = 0;
+
+        while (control_active && !should_stop_)
         {
-            franka::Robot robot(robot_ip);
-            setDefaultBehavior(robot);
-
-            // Move to a suitable starting joint configuration
-            std::array<double, 7> q_goal = {{60.0 * M_PI / 180.0,
-                                             -55.0 * M_PI / 180.0,
-                                             -70.0 * M_PI / 180.0,
-                                             -100.0 * M_PI / 180.0,
-                                             -30.0 * M_PI / 180.0,
-                                             160.0 * M_PI / 180.0,
-                                             30.0 * M_PI / 180.0}};
-            MotionGenerator motion_generator(0.5, q_goal);
-            std::cout << "WARNING: This example will move the robot! "
-                      << "Please make sure to have the user stop button at hand!" << std::endl
-                      << "Press Enter to continue..." << std::endl;
-            std::cin.ignore();
-            robot.control(motion_generator);
-            std::cout << "Finished moving to initial joint configuration." << std::endl;
-
-            // Collision behavior
-            robot.setCollisionBehavior(
-                {{100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 60.0}}, {{100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 60.0}},
-                {{100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 60.0}}, {{100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 60.0}},
-                {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}}, {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}},
-                {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}}, {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}});
-
-            // Moderate impedance for smooth motion
-            robot.setCartesianImpedance({{1000, 1000, 1000, 100, 100, 100}});
-
-            // Initialize poses from the robot's current state
-            franka::RobotState state = robot.readOnce();
-            initial_robot_pose_ = Eigen::Affine3d(Eigen::Matrix4d::Map(state.O_T_EE.data()));
-
-            // Initialize all targets to the robot's starting pose
-            vr_target_position_ = initial_robot_pose_.translation();
-            interpolated_target_position_ = initial_robot_pose_.translation();
-
-            vr_target_orientation_ = Eigen::Quaterniond(initial_robot_pose_.rotation());
-            interpolated_target_orientation_ = Eigen::Quaterniond(initial_robot_pose_.rotation());
-
-            std::thread network_thread(&SimplifiedVRController::networkThread, this);
-
-            std::cout << "Waiting for VR data..." << std::endl;
-            while (!vr_initialized_ && running_)
+            try
             {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
+                franka::Robot robot(robot_ip);
+                setDefaultBehavior(robot);
 
-            if (vr_initialized_)
+                // Only move to initial position on first run or after successful recovery
+                if (recovery_attempts == 0)
+                {
+                    // Move to a suitable starting joint configuration
+                    std::array<double, 7> q_goal = {{60.0 * M_PI / 180.0,
+                                                     -55.0 * M_PI / 180.0,
+                                                     -70.0 * M_PI / 180.0,
+                                                     -100.0 * M_PI / 180.0,
+                                                     -30.0 * M_PI / 180.0,
+                                                     160.0 * M_PI / 180.0,
+                                                     30.0 * M_PI / 180.0}};
+                    MotionGenerator motion_generator(0.5, q_goal);
+                    std::cout << "WARNING: This example will move the robot! "
+                              << "Please make sure to have the user stop button at hand!" << std::endl
+                              << "Press Enter to continue..." << std::endl;
+                    std::cin.ignore();
+                    robot.control(motion_generator);
+                    std::cout << "Finished moving to initial joint configuration." << std::endl;
+
+                    // Set robot parameters only on first run
+                    // Collision behavior
+                    robot.setCollisionBehavior(
+                        {{100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 60.0}}, {{100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 60.0}},
+                        {{100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 60.0}}, {{100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 60.0}},
+                        {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}}, {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}},
+                        {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}}, {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}});
+
+                    // Moderate impedance for smooth motion
+                    robot.setCartesianImpedance({{1000, 1000, 1000, 100, 100, 100}});
+                }
+                else
+                {
+                    // After recovery, reinitialize settings
+                    reinitializeRobotSettings(robot);
+                }
+
+                // Initialize poses from the robot's current state
+                franka::RobotState state = robot.readOnce();
+                initial_robot_pose_ = Eigen::Affine3d(Eigen::Matrix4d::Map(state.O_T_EE.data()));
+
+                // Initialize all targets to the robot's starting pose
+                vr_target_position_ = initial_robot_pose_.translation();
+                interpolated_target_position_ = initial_robot_pose_.translation();
+
+                vr_target_orientation_ = Eigen::Quaterniond(initial_robot_pose_.rotation());
+                interpolated_target_orientation_ = Eigen::Quaterniond(initial_robot_pose_.rotation());
+
+                std::thread network_thread(&SimplifiedVRController::networkThread, this);
+
+                std::cout << "Waiting for VR data..." << std::endl;
+                while (!vr_initialized_ && running_ && !should_stop_)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                }
+
+                if (vr_initialized_ && !should_stop_)
+                {
+                    std::cout << "VR initialized! Starting active control." << std::endl;
+                    this->runVRControl(robot);
+                }
+
+                running_ = false;
+                if (network_thread.joinable())
+                    network_thread.join();
+
+                // If we reach here without exception, exit the control loop
+                control_active = false;
+            }
+            catch (const franka::Exception &e)
             {
-                std::cout << "VR initialized! Starting active control." << std::endl;
-                this->runVRControl(robot);
-            }
+                std::cerr << "Franka exception: " << e.what() << std::endl;
+                
+                // Stop network thread if it's running
+                running_ = false;
 
-            running_ = false;
-            if (network_thread.joinable())
-                network_thread.join();
-        }
-        catch (const franka::Exception &e)
-        {
-            std::cerr << "Franka exception: " << e.what() << std::endl;
-            running_ = false;
+                recovery_attempts++;
+                if (recovery_attempts <= recovery_params_.max_recovery_attempts)
+                {
+                    // Create a new robot instance for recovery
+                    try
+                    {
+                        franka::Robot recovery_robot(robot_ip);
+                        if (attemptErrorRecovery(recovery_robot, e, recovery_attempts))
+                        {
+                            std::cout << "\n========================================" << std::endl;
+                            std::cout << "PREPARING TO RESTART VR CONTROL" << std::endl;
+                            std::cout << "========================================" << std::endl;
+                            std::cout << "Recovery successful! About to restart VR control..." << std::endl;
+                            std::cout << "Make sure VR system is ready and press Enter to continue: ";
+                            std::cin.get();
+                            
+                            // Reset for next iteration
+                            running_ = true;
+                            vr_initialized_ = false;  // Force VR re-initialization
+                            continue;
+                        }
+                    }
+                    catch (const franka::Exception &recovery_error)
+                    {
+                        std::cerr << "Failed to create robot instance for recovery: " << recovery_error.what() << std::endl;
+                    }
+                }
+                
+                std::cerr << "Maximum recovery attempts reached or recovery failed. Exiting." << std::endl;
+                control_active = false;
+            }
+            catch (const std::exception &e)
+            {
+                std::cerr << "Non-Franka exception: " << e.what() << std::endl;
+                
+                // Stop network thread if it's running
+                running_ = false;
+                
+                recovery_attempts++;
+                if (recovery_attempts <= recovery_params_.max_recovery_attempts)
+                {
+                    std::cout << "Attempting to recover from non-Franka exception..." << std::endl;
+                    std::cout << "Press Enter to retry: ";
+                    std::cin.get();
+                    
+                    // Reset for next iteration
+                    running_ = true;
+                    vr_initialized_ = false;
+                    continue;
+                }
+                
+                control_active = false;
+            }
         }
     }
 
@@ -289,6 +474,13 @@ private:
                                        const franka::RobotState &robot_state,
                                        franka::Duration period) -> franka::CartesianPose
         {
+            // Check for stop signal
+            if (should_stop_)
+            {
+                // Return current pose to stop smoothly
+                return franka::MotionFinished(robot_state.O_T_EE_c);
+            }
+
             //Update the ultimate goal from VR (~ 50Hz)
             VRCommand cmd;
             {
@@ -342,16 +534,22 @@ private:
             return pose_array;
         };
 
-        try
-        {
-            robot.control(vr_control_callback);
-        }
-        catch (const franka::ControlException &e)
-        {
-            std::cerr << "VR control exception: " << e.what() << std::endl;
-        }
+        // Remove the inner try-catch since we want exceptions to propagate to the outer recovery loop
+        robot.control(vr_control_callback);
     }
 };
+
+// Global pointer for signal handler
+SimplifiedVRController* g_controller = nullptr;
+
+void signalHandler(int signum)
+{
+    std::cout << "\nReceived signal " << signum << ". Shutting down gracefully..." << std::endl;
+    if (g_controller)
+    {
+        g_controller->stop();
+    }
+}
 
 int main(int argc, char **argv)
 {
@@ -364,8 +562,12 @@ int main(int argc, char **argv)
     try
     {
         SimplifiedVRController controller;
-        // Add a signal handler to gracefully shut down on Ctrl+C
-        // std::signal(SIGINT, [](int signum){ controller.stop(); }); // Example, needs a stop() method
+        g_controller = &controller;
+
+        // Set up signal handler for graceful shutdown
+        std::signal(SIGINT, signalHandler);
+        std::signal(SIGTERM, signalHandler);
+
         controller.run(argv[1]);
     }
     catch (const std::exception &e)
