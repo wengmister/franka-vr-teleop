@@ -40,8 +40,8 @@ private:
     // Simplified parameters for VR mapping
     struct VRParams
     {
-        double position_gain = 0.0018;    // control gain for position contorl
-        double orientation_gain = 0.0015; // control gain for orientation control
+        double position_gain = 0.0020;    // control gain for position contorl
+        double orientation_gain = 0.0018; // control gain for orientation control
         double vr_smoothing = 0.1;        // Smoothing of incoming VR data
 
         // Deadzones to prevent drift from small sensor noise
