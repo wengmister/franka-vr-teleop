@@ -5,6 +5,7 @@ This system enables direct control of a Franka robot using Meta Quest 3 VR heads
 VR App repo @ [here](https://github.com/wengmister/quest-wrist-trackerw)
 
 
+![arm vr con](https://github.com/user-attachments/assets/ccdd6b5d-a6ad-432a-9ac7-2af68a295281)
 
 
 
@@ -202,6 +203,13 @@ ros2 launch franka_vr_teleop vr_control.launch.py \
     orientation_deadzone:=0.03 \
     smoothing_factor:=0.2
 ```
+
+# Demo
+
+![hand vr con](https://github.com/user-attachments/assets/b7df9406-0af2-440f-aec6-61f3f7d252d9)
+
+Open-source robot hand @ [this repo](https://github.com/wengmister/BiDexHand)
+
 
 # License
 MIT
