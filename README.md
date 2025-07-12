@@ -2,12 +2,10 @@
 
 This system enables direct control of a Franka robot using Meta Quest 3 VR headset hand tracking. Your hand movements in VR are translated to robot end-effector pose commands with advanced smoothing, safety limits, and real-time visualization.
 
-VR App repo @ [here](https://github.com/wengmister/quest-wrist-trackerw)
+VR App repo @ [here](https://github.com/wengmister/quest-wrist-tracker)
 
 
 ![arm vr con](https://github.com/user-attachments/assets/ccdd6b5d-a6ad-432a-9ac7-2af68a295281)
-
-
 
 
 ## Architecture
@@ -103,7 +101,7 @@ source install/setup.bash
 
 ### 3. VR Headset Setup
 
-VR App repo @ [here](https://github.com/wengmister/quest-wrist-trackerw)
+VR App repo @ [here](https://github.com/wengmister/quest-wrist-tracker)
 
 The VR application should send UDP messages to **port 9000** in this format:
 ```
@@ -119,7 +117,12 @@ Example message:
 Right wrist:, 0.123, 0.456, 0.789, 0.0, 0.0, 0.0, 1.0
 ```
 
-## Usage (Updated for Absolute Pose Control)
+
+![wrist tracker](https://github.com/user-attachments/assets/8af57c3e-8912-4dca-a7f9-6eb8088d8357)
+
+
+
+## Usage
 
 ### 1. Start Robot Controller (Realtime PC)
 
