@@ -88,7 +88,7 @@ private:
     static constexpr double ACTIVATION_TIME_SEC = 0.5; // Faster activation
     
     // Franka joint limits for responsive teleoperation 
-    static constexpr std::array<double, 7> MAX_JOINT_VELOCITY = {1.7, 1.7, 1.7, 1.7, 2.0, 2.0, 2.0};     // Increase for responsiveness
+    static constexpr std::array<double, 7> MAX_JOINT_VELOCITY = {1.6, 1.6, 1.6, 1.6, 2.0, 2.0, 2.0};     // Increase for responsiveness
     static constexpr std::array<double, 7> MAX_JOINT_ACCELERATION = {4.0, 4.0, 4.0, 4.0, 6.0, 6.0, 6.0}; // Increase for snappier response
     static constexpr std::array<double, 7> MAX_JOINT_JERK = {8.0, 8.0, 8.0, 8.0, 12.0, 12.0, 12.0};  // Higher jerk for snappier response
     static constexpr double CONTROL_CYCLE_TIME = 0.001;  // 1 kHz

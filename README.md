@@ -260,6 +260,4 @@ Example: `0.123 0.456 0.789 0.0 0.0 0.0 1.0`
 
 2. **Start VR application** sending pose data to port 8888
 
-**This system provides professional-grade VR teleoperation with smooth, responsive control and robust error handling. The advanced motion control pipeline ensures safe, precise robot operation without the velocity discontinuities that plagued earlier systems.**
-
 ## Demo
