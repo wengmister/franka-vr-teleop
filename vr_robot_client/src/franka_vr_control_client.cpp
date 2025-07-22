@@ -88,9 +88,9 @@ private:
     static constexpr double ACTIVATION_TIME_SEC = 0.5; // Faster activation
     
     // Franka joint limits for responsive teleoperation 
-    static constexpr std::array<double, 7> MAX_JOINT_VELOCITY = {1.5, 1.5, 1.5, 1.5, 2.0, 2.0, 2.0};     // Increase for responsiveness
-    static constexpr std::array<double, 7> MAX_JOINT_ACCELERATION = {4.0, 4.0, 4.0, 4.0, 5.0, 5.0, 5.0}; // Increase for snappier response
-    static constexpr std::array<double, 7> MAX_JOINT_JERK = {10.0, 10.0, 10.0, 10.0, 15.0, 15.0, 15.0};  // Higher jerk for snappier response
+    static constexpr std::array<double, 7> MAX_JOINT_VELOCITY = {1.7, 1.7, 1.7, 1.7, 2.0, 2.0, 2.0};     // Increase for responsiveness
+    static constexpr std::array<double, 7> MAX_JOINT_ACCELERATION = {4.0, 4.0, 4.0, 4.0, 6.0, 6.0, 6.0}; // Increase for snappier response
+    static constexpr std::array<double, 7> MAX_JOINT_JERK = {8.0, 8.0, 8.0, 8.0, 12.0, 12.0, 12.0};  // Higher jerk for snappier response
     static constexpr double CONTROL_CYCLE_TIME = 0.001;  // 1 kHz
 
 public:
@@ -285,7 +285,7 @@ public:
             ik_solver_ = std::make_unique<WeightedIKSolver>(
                 neutral_joint_pose_,
                 1.0,  // manipulability weight
-                0.25,  // neutral distance weight  
+                0.5,  // neutral distance weight  
                 3.0,  // current distance weight - need to strongly prioritize current state
                 false // verbose = false for real-time use
             );
