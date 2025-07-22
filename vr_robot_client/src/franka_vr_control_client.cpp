@@ -85,11 +85,16 @@ private:
     std::unique_ptr<ruckig::Ruckig<7>> trajectory_generator_;
     ruckig::InputParameter<7> ruckig_input_;
     ruckig::OutputParameter<7> ruckig_output_;
+    bool ruckig_initialized_ = false;
+    
+    // Gradual activation to prevent sudden movements
+    std::chrono::steady_clock::time_point control_start_time_;
+    static constexpr double ACTIVATION_TIME_SEC = 2.0; // Gradual activation over 2 seconds
     
     // Franka joint limits for safe teleoperation 
     static constexpr std::array<double, 7> MAX_JOINT_VELOCITY = {1.5, 1.5, 1.5, 1.5, 2.0, 2.0, 2.0};
-    static constexpr std::array<double, 7> MAX_JOINT_ACCELERATION = {8.0, 8.0, 8.0, 8.0, 10.0, 10.0, 10.0};
-    static constexpr std::array<double, 7> MAX_JOINT_JERK = {25.0, 25.0, 25.0, 25.0, 30.0, 30.0, 30.0};
+    static constexpr std::array<double, 7> MAX_JOINT_ACCELERATION = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
+    static constexpr std::array<double, 7> MAX_JOINT_JERK = {0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5};
     static constexpr double CONTROL_CYCLE_TIME = 0.001;  // 1 kHz
 
 public:
@@ -289,24 +294,20 @@ public:
                 false // verbose = false for real-time use
             );
             
-            // Initialize Ruckig trajectory generator
+            // Initialize Ruckig trajectory generator (but don't set initial state yet)
             trajectory_generator_ = std::make_unique<ruckig::Ruckig<7>>();
             trajectory_generator_->delta_time = CONTROL_CYCLE_TIME;
             
-            // Set up joint limits for safe teleoperation
+            // Set up joint limits for safe teleoperation (but don't set positions yet)
             for (size_t i = 0; i < 7; ++i) {
-                ruckig_input_.current_position[i] = current_joint_angles_[i];
-                ruckig_input_.current_velocity[i] = 0.0;
-                ruckig_input_.current_acceleration[i] = 0.0;
-                ruckig_input_.target_position[i] = current_joint_angles_[i];
-                ruckig_input_.target_velocity[i] = 0.0;
-                ruckig_input_.target_acceleration[i] = 0.0;
                 ruckig_input_.max_velocity[i] = MAX_JOINT_VELOCITY[i];
                 ruckig_input_.max_acceleration[i] = MAX_JOINT_ACCELERATION[i];
                 ruckig_input_.max_jerk[i] = MAX_JOINT_JERK[i];
+                ruckig_input_.target_velocity[i] = 0.0;
+                ruckig_input_.target_acceleration[i] = 0.0;
             }
             
-            std::cout << "Ruckig trajectory generator initialized with 7 DOFs" << std::endl;
+            std::cout << "Ruckig trajectory generator configured with 7 DOFs" << std::endl;
 
             // Initialize VR targets to the robot's starting pose
             vr_target_position_ = initial_robot_pose_.translation();
@@ -352,13 +353,38 @@ private:
             }
             updateVRTargets(cmd);
 
-            // Update current joint state for Ruckig
-            for (int i = 0; i < 7; i++) {
-                current_joint_angles_[i] = robot_state.q[i];
-                ruckig_input_.current_position[i] = robot_state.q[i];
-                ruckig_input_.current_velocity[i] = robot_state.dq[i];
-                ruckig_input_.current_acceleration[i] = robot_state.ddq_d[i];
+            // Initialize Ruckig with actual robot state on first call
+            if (!ruckig_initialized_) {
+                for (int i = 0; i < 7; i++) {
+                    current_joint_angles_[i] = robot_state.q[i];
+                    ruckig_input_.current_position[i] = robot_state.q[i];
+                    ruckig_input_.current_velocity[i] = 0.0; // Force zero velocity to avoid discontinuities
+                    ruckig_input_.current_acceleration[i] = 0.0; // Force zero acceleration to avoid discontinuities
+                    ruckig_input_.target_position[i] = robot_state.q[i]; // Start with current position
+                }
+                control_start_time_ = std::chrono::steady_clock::now();
+                ruckig_initialized_ = true;
+                std::cout << "Ruckig initialized with robot state at control start" << std::endl;
+                std::cout << "Initial joint positions: ";
+                for (int i = 0; i < 7; i++) {
+                    std::cout << robot_state.q[i] << " ";
+                }
+                std::cout << std::endl;
+            } else {
+                // Update current joint state for Ruckig
+                for (int i = 0; i < 7; i++) {
+                    current_joint_angles_[i] = robot_state.q[i];
+                    ruckig_input_.current_position[i] = robot_state.q[i];
+                    // Use small velocity values to avoid discontinuities
+                    ruckig_input_.current_velocity[i] = std::max(-0.1, std::min(0.1, robot_state.dq[i]));
+                    ruckig_input_.current_acceleration[i] = 0.0; // Keep acceleration at zero for stability
+                }
             }
+            
+            // Calculate activation factor for gradual activation
+            auto current_time = std::chrono::steady_clock::now();
+            double elapsed_sec = std::chrono::duration<double>(current_time - control_start_time_).count();
+            double activation_factor = std::min(1.0, elapsed_sec / ACTIVATION_TIME_SEC);
             
             // Solve IK for VR target pose to get target joint angles
             std::array<double, 3> target_pos = eigenToArray3(vr_target_position_);
@@ -375,33 +401,61 @@ private:
                 q7_start, q7_end, Q7_STEP_SIZE
             );
             
-            // Set Ruckig targets based on IK solution
-            if (ik_result.success) {
-                // Use IK solution as target
-                for (int i = 0; i < 7; i++) {
-                    ruckig_input_.target_position[i] = ik_result.joint_angles[i];
-                }
-                // Enforce q7 limits
-                ruckig_input_.target_position[6] = clampQ7(ruckig_input_.target_position[6]);
-            } else {
-                // Fallback: target current position if IK fails
-                for (int i = 0; i < 7; i++) {
-                    ruckig_input_.target_position[i] = current_joint_angles_[i];
+            // Debug output every 100 cycles (0.1 seconds)
+            static int debug_counter = 0;
+            debug_counter++;
+            if (debug_counter <= 10 || debug_counter % 100 == 0) {
+                std::cout << "Cycle " << debug_counter << ": Activation: " << std::fixed << std::setprecision(3) << activation_factor 
+                          << ", IK success: " << (ik_result.success ? "yes" : "no") << std::endl;
+                if (debug_counter <= 3) {
+                    std::cout << "Current pos: ";
+                    for (int i = 0; i < 7; i++) std::cout << std::fixed << std::setprecision(4) << current_joint_angles_[i] << " ";
+                    std::cout << std::endl;
                 }
             }
             
-            // Generate smooth trajectory using Ruckig
+            // Only update targets if we have a valid IK solution and apply gradual activation
+            if (ruckig_initialized_) {
+                if (ik_result.success) {
+                    // Gradually blend from current position to IK solution
+                    for (int i = 0; i < 7; i++) {
+                        double current_pos = current_joint_angles_[i];
+                        double target_pos = ik_result.joint_angles[i];
+                        ruckig_input_.target_position[i] = current_pos + activation_factor * (target_pos - current_pos);
+                    }
+                    // Enforce q7 limits
+                    ruckig_input_.target_position[6] = clampQ7(ruckig_input_.target_position[6]);
+                }
+                // If IK fails, keep previous target (don't change target_position)
+            }
+            
+            // Always run Ruckig to keep it in sync, but use different outputs based on activation
             ruckig::Result ruckig_result = trajectory_generator_->update(ruckig_input_, ruckig_output_);
             
             std::array<double, 7> target_joint_angles;
-            if (ruckig_result == ruckig::Result::Working || ruckig_result == ruckig::Result::Finished) {
+            
+            if (activation_factor < 0.05) {
+                // For the first ~100ms, use current position to ensure perfect continuity
+                // This gives Ruckig time to stabilize its internal state
+                target_joint_angles = current_joint_angles_;
+            } else if (ruckig_result == ruckig::Result::Working || ruckig_result == ruckig::Result::Finished) {
                 // Use Ruckig's smooth output
                 for (int i = 0; i < 7; i++) {
                     target_joint_angles[i] = ruckig_output_.new_position[i];
                 }
             } else {
-                // Emergency fallback: use current position
+                // Emergency fallback: use current position to ensure continuity
                 target_joint_angles = current_joint_angles_;
+                if (debug_counter % 100 == 0) {
+                    std::cout << "Ruckig error, using current position for continuity" << std::endl;
+                }
+            }
+            
+            // Debug output for the first few commands
+            if (debug_counter <= 3) {
+                std::cout << "Target pos: ";
+                for (int i = 0; i < 7; i++) std::cout << std::fixed << std::setprecision(4) << target_joint_angles[i] << " ";
+                std::cout << std::endl;
             }
 
             if (!running_)
