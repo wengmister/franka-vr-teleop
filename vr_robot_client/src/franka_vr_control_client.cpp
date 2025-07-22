@@ -20,6 +20,7 @@
 
 #include "examples_common.h"
 #include "weighted_ik.h"
+#include <ruckig/ruckig.hpp>
 
 struct VRCommand
 {
@@ -38,32 +39,26 @@ private:
     int server_socket_;
     const int PORT = 8888;
 
-    // Simplified parameters for VR mapping
+    // VR mapping parameters
     struct VRParams
     {
-        double position_gain = 0.0018;    // control gain for position contorl
-        double orientation_gain = 0.0015; // control gain for orientation control
         double vr_smoothing = 0.1;        // Smoothing of incoming VR data
 
         // Deadzones to prevent drift from small sensor noise
         double position_deadzone = 0.001;   // 1mm
         double orientation_deadzone = 0.03; // ~1.7 degrees
 
-        // Interpolation max step size
-        double max_interp_position_step = 0.3; // 0.3m/s
-        double max_interp_orientation_step = 0.6; // 0.6rad/s
-
         // Workspace limits to keep the robot in a safe area
         double max_position_offset = 0.6;   // 60cm from initial position
+        
+        // Note: Removed interpolation gains - now using Ruckig for trajectory generation
     } params_;
 
     // Rename target_... to vr_target_... to clarify it's the goal from VR.
     Eigen::Vector3d vr_target_position_;
     Eigen::Quaterniond vr_target_orientation_;
 
-    // This is the smooth target that updates at 1kHz.
-    Eigen::Vector3d interpolated_target_position_;
-    Eigen::Quaterniond interpolated_target_orientation_;
+    // Note: Removed interpolated targets - now using Ruckig for smooth trajectory generation
 
     // VR filtering state
     Eigen::Vector3d filtered_vr_position_{0, 0, 0};
@@ -85,6 +80,17 @@ private:
     static constexpr double Q7_MAX = 1.9;
     static constexpr double Q7_SEARCH_RANGE = 0.25;
     static constexpr double Q7_STEP_SIZE = 0.01;
+
+    // Ruckig trajectory generator for smooth joint space motion
+    std::unique_ptr<ruckig::Ruckig<7>> trajectory_generator_;
+    ruckig::InputParameter<7> ruckig_input_;
+    ruckig::OutputParameter<7> ruckig_output_;
+    
+    // Franka joint limits for safe teleoperation 
+    static constexpr std::array<double, 7> MAX_JOINT_VELOCITY = {1.5, 1.5, 1.5, 1.5, 2.0, 2.0, 2.0};
+    static constexpr std::array<double, 7> MAX_JOINT_ACCELERATION = {8.0, 8.0, 8.0, 8.0, 10.0, 10.0, 10.0};
+    static constexpr std::array<double, 7> MAX_JOINT_JERK = {25.0, 25.0, 25.0, 25.0, 30.0, 30.0, 30.0};
+    static constexpr double CONTROL_CYCLE_TIME = 0.001;  // 1 kHz
 
 public:
     SimplifiedVRController()
@@ -282,13 +288,29 @@ public:
                 2.0,  // current distance weight
                 false // verbose = false for real-time use
             );
+            
+            // Initialize Ruckig trajectory generator
+            trajectory_generator_ = std::make_unique<ruckig::Ruckig<7>>();
+            trajectory_generator_->delta_time = CONTROL_CYCLE_TIME;
+            
+            // Set up joint limits for safe teleoperation
+            for (size_t i = 0; i < 7; ++i) {
+                ruckig_input_.current_position[i] = current_joint_angles_[i];
+                ruckig_input_.current_velocity[i] = 0.0;
+                ruckig_input_.current_acceleration[i] = 0.0;
+                ruckig_input_.target_position[i] = current_joint_angles_[i];
+                ruckig_input_.target_velocity[i] = 0.0;
+                ruckig_input_.target_acceleration[i] = 0.0;
+                ruckig_input_.max_velocity[i] = MAX_JOINT_VELOCITY[i];
+                ruckig_input_.max_acceleration[i] = MAX_JOINT_ACCELERATION[i];
+                ruckig_input_.max_jerk[i] = MAX_JOINT_JERK[i];
+            }
+            
+            std::cout << "Ruckig trajectory generator initialized with 7 DOFs" << std::endl;
 
-            // Initialize all targets to the robot's starting pose
+            // Initialize VR targets to the robot's starting pose
             vr_target_position_ = initial_robot_pose_.translation();
-            interpolated_target_position_ = initial_robot_pose_.translation();
-
             vr_target_orientation_ = Eigen::Quaterniond(initial_robot_pose_.rotation());
-            interpolated_target_orientation_ = Eigen::Quaterniond(initial_robot_pose_.rotation());
 
             std::thread network_thread(&SimplifiedVRController::networkThread, this);
 
@@ -322,7 +344,7 @@ private:
                                        const franka::RobotState &robot_state,
                                        franka::Duration period) -> franka::JointPositions
         {
-            //Update the ultimate goal from VR (~ 50Hz)
+            // Update VR targets from latest command (~50Hz)
             VRCommand cmd;
             {
                 std::lock_guard<std::mutex> lock(command_mutex_);
@@ -330,38 +352,17 @@ private:
             }
             updateVRTargets(cmd);
 
-            // Move the interpolated target a small step towards the ultimate VR target.
-            // Define max speeds for the interpolated target
-            const double max_step_distance = params_.max_interp_position_step * period.toSec();
-            const double max_step_angle = params_.max_interp_orientation_step * period.toSec();
-
-            // Position interpolation
-            Eigen::Vector3d pos_error = vr_target_position_ - interpolated_target_position_;
-            double distance = pos_error.norm();
-            if (distance > 1e-6)
-            { // Avoid normalization of zero vector
-                double step_distance = std::min(max_step_distance, distance);
-                interpolated_target_position_ += (pos_error / distance) * step_distance;
-            }
-
-            // Orientation interpolation
-            double angle_error = interpolated_target_orientation_.angularDistance(vr_target_orientation_);
-            if (angle_error > 1e-6) {
-                // Limit the angular step size (same logic as position)
-                double step_angle = std::min(max_step_angle, angle_error);
-                double slerp_fraction = step_angle / angle_error;
-                
-                interpolated_target_orientation_ = interpolated_target_orientation_.slerp(slerp_fraction, vr_target_orientation_);
-            }
-
-            // Update current joint angles from robot state
+            // Update current joint state for Ruckig
             for (int i = 0; i < 7; i++) {
                 current_joint_angles_[i] = robot_state.q[i];
+                ruckig_input_.current_position[i] = robot_state.q[i];
+                ruckig_input_.current_velocity[i] = robot_state.dq[i];
+                ruckig_input_.current_acceleration[i] = robot_state.ddq_d[i];
             }
             
-            // Convert target pose to arrays for IK solver
-            std::array<double, 3> target_pos = eigenToArray3(interpolated_target_position_);
-            std::array<double, 9> target_rot = quaternionToRotationArray(interpolated_target_orientation_);
+            // Solve IK for VR target pose to get target joint angles
+            std::array<double, 3> target_pos = eigenToArray3(vr_target_position_);
+            std::array<double, 9> target_rot = quaternionToRotationArray(vr_target_orientation_);
             
             // Calculate q7 search range around current value
             double current_q7 = current_joint_angles_[6];
@@ -374,16 +375,32 @@ private:
                 q7_start, q7_end, Q7_STEP_SIZE
             );
             
-            std::array<double, 7> target_joint_angles;
-            
+            // Set Ruckig targets based on IK solution
             if (ik_result.success) {
-                // Use IK solution
-                target_joint_angles = ik_result.joint_angles;
-                
-                // Enforce q7 limits as safety measure
-                target_joint_angles[6] = clampQ7(target_joint_angles[6]);
+                // Use IK solution as target
+                for (int i = 0; i < 7; i++) {
+                    ruckig_input_.target_position[i] = ik_result.joint_angles[i];
+                }
+                // Enforce q7 limits
+                ruckig_input_.target_position[6] = clampQ7(ruckig_input_.target_position[6]);
             } else {
-                // Fallback: keep current joint angles if IK fails
+                // Fallback: target current position if IK fails
+                for (int i = 0; i < 7; i++) {
+                    ruckig_input_.target_position[i] = current_joint_angles_[i];
+                }
+            }
+            
+            // Generate smooth trajectory using Ruckig
+            ruckig::Result ruckig_result = trajectory_generator_->update(ruckig_input_, ruckig_output_);
+            
+            std::array<double, 7> target_joint_angles;
+            if (ruckig_result == ruckig::Result::Working || ruckig_result == ruckig::Result::Finished) {
+                // Use Ruckig's smooth output
+                for (int i = 0; i < 7; i++) {
+                    target_joint_angles[i] = ruckig_output_.new_position[i];
+                }
+            } else {
+                // Emergency fallback: use current position
                 target_joint_angles = current_joint_angles_;
             }
 

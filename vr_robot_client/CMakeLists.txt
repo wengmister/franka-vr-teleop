@@ -16,6 +16,7 @@ set(CMAKE_PREFIX_PATH "${CMAKE_PREFIX_PATH};$ENV{HOME}/ws/franka/install")
 find_package(Franka REQUIRED)
 find_package(Threads REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(ruckig REQUIRED)
 
 # Add libraries
 add_library(examples_common src/examples_common.cpp)
@@ -41,6 +42,7 @@ target_link_libraries(franka_vr_control_client
     examples_common
     weighted_ik
     geofik
+    ruckig::ruckig
     ${EIGEN3_LIBRARIES}
 )
 
