@@ -343,7 +343,7 @@ private:
     {
         auto vr_control_callback = [this](
                                        const franka::RobotState &robot_state,
-                                       franka::Duration period) -> franka::JointPositions
+                                       franka::Duration period) -> franka::JointVelocities
         {
             // Update VR targets from latest command (~50Hz)
             VRCommand cmd;
@@ -358,26 +358,22 @@ private:
                 for (int i = 0; i < 7; i++) {
                     current_joint_angles_[i] = robot_state.q[i];
                     ruckig_input_.current_position[i] = robot_state.q[i];
-                    ruckig_input_.current_velocity[i] = 0.0; // Force zero velocity to avoid discontinuities
-                    ruckig_input_.current_acceleration[i] = 0.0; // Force zero acceleration to avoid discontinuities
-                    ruckig_input_.target_position[i] = robot_state.q[i]; // Start with current position
+                    ruckig_input_.current_velocity[i] = 0.0; // Start with zero velocity command
+                    ruckig_input_.current_acceleration[i] = 0.0; // Start with zero acceleration
+                    ruckig_input_.target_position[i] = robot_state.q[i]; // Start with current position as target
+                    ruckig_input_.target_velocity[i] = 0.0; // Start with zero target velocity
                 }
                 control_start_time_ = std::chrono::steady_clock::now();
                 ruckig_initialized_ = true;
-                std::cout << "Ruckig initialized with robot state at control start" << std::endl;
-                std::cout << "Initial joint positions: ";
-                for (int i = 0; i < 7; i++) {
-                    std::cout << robot_state.q[i] << " ";
-                }
-                std::cout << std::endl;
+                std::cout << "Ruckig initialized for velocity control at control start" << std::endl;
+                std::cout << "Starting with zero velocity commands to smoothly take over control" << std::endl;
             } else {
-                // Update current joint state for Ruckig
+                // Update current joint state for Ruckig using previous Ruckig output for continuity
                 for (int i = 0; i < 7; i++) {
                     current_joint_angles_[i] = robot_state.q[i];
                     ruckig_input_.current_position[i] = robot_state.q[i];
-                    // Use small velocity values to avoid discontinuities
-                    ruckig_input_.current_velocity[i] = std::max(-0.1, std::min(0.1, robot_state.dq[i]));
-                    ruckig_input_.current_acceleration[i] = 0.0; // Keep acceleration at zero for stability
+                    ruckig_input_.current_velocity[i] = ruckig_output_.new_velocity[i]; // Use our own velocity command for continuity
+                    ruckig_input_.current_acceleration[i] = ruckig_output_.new_acceleration[i]; // Use Ruckig's acceleration
                 }
             }
             
@@ -401,68 +397,63 @@ private:
                 q7_start, q7_end, Q7_STEP_SIZE
             );
             
-            // Debug output every 100 cycles (0.1 seconds)
+            // Debug output for velocity control
             static int debug_counter = 0;
             debug_counter++;
-            if (debug_counter <= 10 || debug_counter % 100 == 0) {
+            if (debug_counter <= 5 || debug_counter % 100 == 0) {
                 std::cout << "Cycle " << debug_counter << ": Activation: " << std::fixed << std::setprecision(3) << activation_factor 
                           << ", IK success: " << (ik_result.success ? "yes" : "no") << std::endl;
-                if (debug_counter <= 3) {
-                    std::cout << "Current pos: ";
-                    for (int i = 0; i < 7; i++) std::cout << std::fixed << std::setprecision(4) << current_joint_angles_[i] << " ";
-                    std::cout << std::endl;
-                }
             }
             
-            // Only update targets if we have a valid IK solution and apply gradual activation
+            // Set Ruckig targets based on IK solution and gradual activation
             if (ruckig_initialized_) {
                 if (ik_result.success) {
-                    // Gradually blend from current position to IK solution
+                    // Gradually blend from current position to IK solution for target position
                     for (int i = 0; i < 7; i++) {
                         double current_pos = current_joint_angles_[i];
-                        double target_pos = ik_result.joint_angles[i];
-                        ruckig_input_.target_position[i] = current_pos + activation_factor * (target_pos - current_pos);
+                        double ik_target_pos = ik_result.joint_angles[i];
+                        ruckig_input_.target_position[i] = current_pos + activation_factor * (ik_target_pos - current_pos);
+                        // Always target zero velocity for smooth stops
+                        ruckig_input_.target_velocity[i] = 0.0;
                     }
                     // Enforce q7 limits
                     ruckig_input_.target_position[6] = clampQ7(ruckig_input_.target_position[6]);
                 }
-                // If IK fails, keep previous target (don't change target_position)
+                // If IK fails, keep previous targets (don't change target_position/velocity)
             }
             
-            // Always run Ruckig to keep it in sync, but use different outputs based on activation
+            // Always run Ruckig to generate smooth velocity commands
             ruckig::Result ruckig_result = trajectory_generator_->update(ruckig_input_, ruckig_output_);
             
-            std::array<double, 7> target_joint_angles;
+            std::array<double, 7> target_joint_velocities;
             
-            if (activation_factor < 0.05) {
-                // For the first ~100ms, use current position to ensure perfect continuity
-                // This gives Ruckig time to stabilize its internal state
-                target_joint_angles = current_joint_angles_;
-            } else if (ruckig_result == ruckig::Result::Working || ruckig_result == ruckig::Result::Finished) {
-                // Use Ruckig's smooth output
+            if (ruckig_result == ruckig::Result::Working || ruckig_result == ruckig::Result::Finished) {
+                // Use Ruckig's smooth velocity output
                 for (int i = 0; i < 7; i++) {
-                    target_joint_angles[i] = ruckig_output_.new_position[i];
+                    target_joint_velocities[i] = ruckig_output_.new_velocity[i];
                 }
             } else {
-                // Emergency fallback: use current position to ensure continuity
-                target_joint_angles = current_joint_angles_;
+                // Emergency fallback: zero velocity to stop smoothly
+                for (int i = 0; i < 7; i++) {
+                    target_joint_velocities[i] = 0.0;
+                }
                 if (debug_counter % 100 == 0) {
-                    std::cout << "Ruckig error, using current position for continuity" << std::endl;
+                    std::cout << "Ruckig error, using zero velocity for safety" << std::endl;
                 }
             }
             
             // Debug output for the first few commands
-            if (debug_counter <= 3) {
-                std::cout << "Target pos: ";
-                for (int i = 0; i < 7; i++) std::cout << std::fixed << std::setprecision(4) << target_joint_angles[i] << " ";
-                std::cout << std::endl;
+            if (debug_counter <= 10 || debug_counter % 100 == 0) {
+                std::cout << "Target vel: ";
+                for (int i = 0; i < 7; i++) std::cout << std::fixed << std::setprecision(4) << target_joint_velocities[i] << " ";
+                std::cout << " [activation: " << std::setprecision(3) << activation_factor << "]" << std::endl;
             }
 
             if (!running_)
             {
-                return franka::MotionFinished(franka::JointPositions(target_joint_angles));
+                return franka::MotionFinished(franka::JointVelocities({0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}));
             }
-            return franka::JointPositions(target_joint_angles);
+            return franka::JointVelocities(target_joint_velocities);
         };
 
         try
