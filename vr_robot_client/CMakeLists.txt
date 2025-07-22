@@ -16,7 +16,18 @@ find_package(Eigen3 REQUIRED)
 # Add examples_common as a library
 add_library(examples_common src/examples_common.cpp)
 target_link_libraries(examples_common Franka::Franka)
-target_include_directories(examples_common PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${EIGEN3_INCLUDE_DIR})
+target_include_directories(examples_common PUBLIC 
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${EIGEN3_INCLUDE_DIR}
+)
+
+# Add panda_kinematics library (if you have the source file)
+add_library(panda_kinematics src/panda_kinematics.cpp)
+target_include_directories(panda_kinematics PUBLIC 
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${EIGEN3_INCLUDE_DIR}
+)
 
 # Add VR Franka control executable
 add_executable(franka_vr_control_client src/franka_vr_control_client.cpp)
@@ -26,12 +37,14 @@ target_link_libraries(franka_vr_control_client
     Franka::Franka
     Threads::Threads
     examples_common
+    panda_kinematics
     ${EIGEN3_LIBRARIES}
 )
 
 # Include directories
 target_include_directories(franka_vr_control_client PRIVATE 
-    ${CMAKE_CURRENT_SOURCE_DIR} 
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${EIGEN3_INCLUDE_DIR}
 )
 
