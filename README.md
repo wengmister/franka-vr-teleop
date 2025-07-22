@@ -1,339 +1,265 @@
-# VR Franka Robot Control System (Working Version)
+# VR Franka Robot Teleoperation System
 
-This system enables direct control of a Franka robot using VR headset hand tracking. Your hand movements in VR are translated to robot end-effector movements with scaling, smoothing, and safety limits.
+This system enables high-performance VR teleoperation of a Franka robot using advanced trajectory generation and inverse kinematics. Your hand movements in VR are translated to smooth, responsive robot motion through joint-space velocity control with jerk-limited trajectories.
 
 ## Architecture
 
 ```
-VR Headset → UDP → ROS2 Workstation → UDP → Realtime PC → Franka Robot
-(hand tracking)  (pose data)  (processing)    (EE commands)  (libfranka)
+VR Headset → UDP → VR Robot Client (Realtime PC) → libfranka → Franka Robot
+(hand tracking)  (pose data)  (IK+Ruckig trajectory generation)  (velocity control)
 ```
 
 ## System Components
 
-1. **VR Headset**: Streams right wrist tracking data via UDP (port 9000)
-2. **ROS2 Workstation**: Processes VR data and converts to robot commands (50Hz)
-3. **Realtime PC**: Runs libfranka pose control (1000Hz)
-4. **Franka Robot**: Follows VR hand movements with sub-centimeter precision
+1. **VR Headset**: Streams hand tracking data via UDP (port 8888)
+2. **VR Robot Client**: Real-time system with advanced motion control:
+   - **Weighted IK**: Optimizes joint configurations for manipulability and smoothness. This is a custom implementation adopted from [PC Lopez-Custodio et al.'s work, GeoFIK](https://github.com/PabloLopezCustodio/GeoFIK). (This is an amazing analytical solver for Franka)
+   - **Ruckig Trajectory Generator**: Provides jerk-limited, time-optimal motion profiles  
+   - **Joint-Space Velocity Control**: Direct velocity commands for responsive control
+   - **Real-time Processing**: 1kHz control loop with <1ms trajectory calculations
+3. **Franka Robot**: Executes smooth, responsive motion without reflexes or discontinuities
 
 ## Setup Instructions
 
-### 1. Realtime PC Setup (192.168.18.1)
+### Prerequisites
 
-#### Build Structure:
+- **libfranka**: For Franka robot control. You will need a version corresponding to your firmware version.
+- **Ruckig**: For trajectory generation (`sudo apt install libruckig-dev` or build from [source](https://github.com/pantor/ruckig))
+- **Eigen3**: For linear algebra (`sudo apt install libeigen3-dev`)
+
+### VR Robot Client Setup
+
+#### Project Structure:
 ```
 vr_robot_client/
 ├── CMakeLists.txt
-├── examples_common.h      
+├── include/
+│   ├── examples_common.h
+│   ├── geofik.h           # Geometric inverse kinematics
+│   └── weighted_ik.h      # Weighted IK solver
 ├── src/
 │   ├── examples_common.cpp
-│   └── vr_franka_control_client.cpp
+│   ├── geofik.cpp         # Franka kinematic functions
+│   ├── weighted_ik.cpp    # Multi-criteria IK optimization
+│   └── franka_vr_control_client.cpp  # Main VR control system
 └── build/
 ```
 
 #### Build Steps:
 ```bash
-# Create directory structure locally first
-mkdir -p vr_robot_client/src
-
-# Copy files to correct locations:
-# - CMakeLists.txt (VR version) to vr_robot_client/
-# - examples_common.h to vr_robot_client/
-# - examples_common.cpp to vr_robot_client/src/
-# - vr_franka_control_client.cpp to vr_robot_client/src/
-
-# Copy to realtime PC
-scp -r vr_robot_client/ user@192.168.18.1:~/
-
-# SSH and build
-ssh user@192.168.18.1
 cd vr_robot_client/build
 cmake ..
-make
+make -j4
+
+# Run the VR control client
+./franka_vr_control_client <robot-hostname>
 ```
 
-### 2. ROS2 Workstation Setup (franka-vr-teleop)
+#### Key Dependencies:
+- **libfranka**: Real-time robot control interface
+- **Ruckig**: Time-optimal trajectory generation with jerk constraints
+- **geofik**: Custom geometric inverse kinematics library for Franka
+- **weighted_ik**: Multi-objective IK solver optimizing manipulability and joint limits
 
-#### Package Structure (Actual):
+### VR Headset Setup
+
+Your VR application should send UDP messages to **port 8888** (directly to the robot client) in this format:
 ```
-franka-vr-teleop/
-├── src/franka_vr_teleop/
-│   ├── __init__.py
-│   └── vr_to_robot_converter.py
-├── launch/
-│   └── vr_control.launch.py
-├── resource/
-├── test/
-├── package.xml
-├── setup.cfg
-└── setup.py
-```
-
-#### Setup Commands:
-```bash
-# Create workspace
-mkdir -p ~/franka-vr-teleop
-cd ~/franka-vr-teleop
-
-# Copy package files to correct structure shown above
-
-# Install dependencies
-pip install numpy scipy
-
-# Build ROS2 package
-colcon build --packages-select franka_vr_teleop
-source install/setup.bash
-```
-
-### 3. VR Headset Setup
-
-Your VR application should send UDP messages to **port 9000** in this format:
-```
-Right wrist:, x, y, z, qx, qy, qz, qw
+x y z qx qy qz qw
 ```
 
 Where:
-- `x, y, z`: Position in meters (VR coordinate system)
-- `qx, qy, qz, qw`: Orientation quaternion
+- `x, y, z`: Position in meters (VR coordinate system)  
+- `qx, qy, qz, qw`: Orientation quaternion (x, y, z, w format)
 
 Example message:
 ```
-Right wrist:, 0.123, 0.456, 0.789, 0.0, 0.0, 0.0, 1.0
+0.123 0.456 0.789 0.0 0.0 0.0 1.0
 ```
 
-## Usage (Verified Working)
+**Note**: This system now uses direct VR→Robot communication, eliminating the ROS2 workstation middleman for reduced latency and improved performance.
 
-### 1. Start Robot Controller (Realtime PC)
+## Usage
+
+### 1. Start VR Robot Client
 
 ```bash
-ssh user@192.168.18.1
 cd vr_robot_client/build
-./vr_franka_control_client 192.168.18.10
+./franka_vr_control_client <robot-hostname>
 ```
 
 Expected output:
 ```
-UDP server listening on port 8888
-WARNING: Robot will move based on VR input!
-Put on your VR headset and make sure to have the emergency stop ready!
+UDP server listening on port 8888 for VR pose data
+WARNING: This example will move the robot! 
+Please make sure to have the user stop button at hand!
 Press Enter to continue...
+
 Finished moving to initial joint configuration.
-Starting VR pose control. Move your VR hand to control robot.
-Initial robot pose captured. VR control active!
+Ruckig trajectory generator configured with 7 DOFs
+Waiting for VR data...
+VR reference pose initialized!
+VR initialized! Starting real-time control.
+Ruckig initialized for velocity control!
+Starting with zero velocity commands to smoothly take over control
 ```
 
-### 2. Start VR Processing (ROS2 Workstation)
+### 2. Start VR Application
 
-```bash
-# Source environment
-source /opt/ros/humble/setup.bash
-source ~/franka-vr-teleop/install/setup.bash
+Put on your VR headset and start the application that streams hand tracking data to **port 8888** on the robot client.
 
-# Launch VR control system (default settings)
-ros2 launch franka_vr_teleop vr_control.launch.py
-```
+The system will:
+1. **Initialize smoothly** with zero velocity commands
+2. **Gradually activate** over 0.5 seconds for safety
+3. **Provide responsive control** with minimal latency
+4. **Generate smooth trajectories** using Ruckig's jerk-limited profiles
 
-Expected output:
-```
-[INFO] [vr_to_robot_converter]: VR to Robot Converter started
-[INFO] [vr_to_robot_converter]: VR UDP: 0.0.0.0:9000
-[INFO] [vr_to_robot_converter]: Robot UDP: 192.168.18.1:8888
-[INFO] [vr_to_robot_converter]: Move your VR hand to start control!
-[INFO] [vr_to_robot_converter]: Initial VR pose captured!
-```
+## Advanced Control Features
 
-**With tuned parameters for better responsiveness:**
-```bash
-ros2 launch franka_vr_teleop vr_control.launch.py \
-    pose_scale:=1.5 \
-    position_deadzone:=0.005 \
-    orientation_scale:=0.8
-```
+### Weighted Inverse Kinematics
+The system uses a multi-objective IK solver that optimizes:
+- **Manipulability**: Avoids singular configurations for better control
+- **Neutral Pose Distance**: Keeps joints close to comfortable positions  
+- **Current Pose Distance**: Minimizes joint motion for smooth transitions
 
-### 3. Start VR Application
+### Trajectory Generation (Ruckig)
+- **Time-optimal trajectories**: Fastest motion within kinematic constraints
+- **Jerk-limited profiles**: Smooth acceleration changes prevent robot stress
+- **Real-time capable**: <1ms computation time for 1kHz control
+- **Velocity control**: Direct joint velocity commands for responsive motion
 
-Put on your VR headset and start the application that streams wrist tracking data to port 9000.
-
-## Control Mapping (Tested & Working)
-
-### Coordinate Systems:
-- **VR**: +x=right, +y=up, +z=forward
-- **Robot**: +x=forward, +y=left, +z=up
-
-### Movement Translation:
-- **VR hand right** → Robot moves **left**
-- **VR hand forward** → Robot moves **forward**  
-- **VR hand up** → Robot moves **up**
-- **VR hand rotation** → Robot end-effector rotation
-
-### Performance Settings (Tuned for Stability):
-- **Linear velocity**: 5cm/s max (prevents acceleration discontinuities)
-- **Angular velocity**: 0.05 rad/s max (~3°/s)
-- **Velocity scaling**: 0.5x conversion factor
-- **Position scaling**: 1.0x default (configurable)
-- **Update rate**: 50Hz VR processing, 1000Hz robot control
+### Performance Settings (Tuned for Responsiveness):
+- **Joint Velocities**: 1.7-2.0 rad/s max (responsive motion)
+- **Joint Accelerations**: 4.0-6.0 rad/s² (snappy response)
+- **Joint Jerk**: 8.0-12.0 rad/s³ (smooth but quick transitions)
+- **VR Smoothing**: 0.05 (minimal filtering for responsiveness)
+- **Activation Time**: 0.5s gradual ramp-up for safety
+- **Update Rate**: 1kHz trajectory generation and robot control
 
 ## Safety Features
 
-### Movement Limits:
-- **Hard velocity caps**: 5cm/s linear, 0.05 rad/s angular
-- **Workspace bounds**: ±50cm from initial position
-- **Pose validation**: Prevents invalid transformations
-- **Deadzone filtering**: 1cm position, 3° orientation default
+### Built-in Safety Systems:
+- **Joint Limit Enforcement**: Q7 clamped to [-0.2, 1.9] rad for safe operation with [BiDexHand](https://github.com/wengmister/BiDexHand)
+- **Workspace Limits**: 0.75m maximum offset from initial position
+- **Velocity Limits**: Configurable per-joint velocity constraints
+- **Jerk Limiting**: Ruckig prevents harmful acceleration changes
+- **Gradual Activation**: 0.5s ramp-up prevents sudden movements
 
-### Control Safety:
-- **Multi-layer smoothing**: VR data + robot pose smoothing
-- **Acceleration limiting**: Prevents velocity discontinuities
-- **Emergency recovery**: Automatic error recovery and restart
-- **Connection monitoring**: Handles network interruptions
-- **Pose limiting**: Hardware safety bounds enforced
+### Robust Error Handling:
+- **IK Fallbacks**: System continues with previous targets if IK fails
+- **Trajectory Fallbacks**: Zero velocity commands on Ruckig errors  
+- **Connection Monitoring**: Handles VR data loss gracefully
+- **Reflex Prevention**: Joint velocity control eliminates motion discontinuities
+- **Automatic Recovery**: System designed to avoid protective stops
 
-### Manual Safety:
-- **Emergency stop**: Available via VR trigger or external device
-- **Pose reset**: Return to initial position
-- **Manual stop**: Physical emergency stop always accessible
+### Physical Safety:
+- **Emergency Stop**: Physical hardware emergency stop always active
+- **Collision Behavior**: Conservative collision detection settings
+- **Joint Impedance**: Moderate impedance for safe human interaction
+- **Manual Override**: Physical intervention always possible
 
 ## Configuration & Tuning
 
-### Launch Parameters:
+### Key Parameters (in source code):
 
-**Basic tuning**:
-```bash
-ros2 launch franka_vr_teleop vr_control.launch.py \
-    pose_scale:=1.2 \                    # Movement amplification
-    orientation_scale:=0.8 \             # Rotation scaling
-    position_deadzone:=0.008 \           # Position sensitivity
-    orientation_deadzone:=0.04           # Rotation sensitivity
+**Responsiveness Tuning** (`franka_vr_control_client.cpp`):
+```cpp
+// VR input filtering
+double vr_smoothing = 0.05;              // Lower = more responsive (0.02-0.1)
+double position_deadzone = 0.001;        // Smaller = more sensitive (0.0005-0.005) 
+double orientation_deadzone = 0.03;      // Smaller = more sensitive (0.01-0.05)
+
+// Activation timing
+double ACTIVATION_TIME_SEC = 0.5;        // Faster startup (0.1-2.0s)
+
+// Joint motion limits
+MAX_JOINT_VELOCITY = {1.7, 1.7, 1.7, 1.7, 2.0, 2.0, 2.0};      // Higher = faster
+MAX_JOINT_ACCELERATION = {4.0, 4.0, 4.0, 4.0, 6.0, 6.0, 6.0};  // Higher = snappier  
+MAX_JOINT_JERK = {8.0, 8.0, 8.0, 8.0, 12.0, 12.0, 12.0};       // Higher = more responsive
 ```
 
-**More responsive** (for precise work):
-```bash
-ros2 launch franka_vr_teleop vr_control.launch.py \
-    pose_scale:=1.8 \
-    position_deadzone:=0.003 \
-    orientation_deadzone:=0.02
-```
-
-**More stable** (for rough VR tracking):
-```bash
-ros2 launch franka_vr_teleop vr_control.launch.py \
-    pose_scale:=0.8 \
-    position_deadzone:=0.015 \
-    orientation_deadzone:=0.08
-```
+**Tuning Guidelines**:
+- **More Responsive**: Decrease `vr_smoothing` to 0.02, increase accelerations to 6.0-8.0
+- **More Stable**: Increase `vr_smoothing` to 0.1, decrease accelerations to 2.0-3.0  
+- **Precise Control**: Decrease deadzones to 0.0005/0.01, reduce `ACTIVATION_TIME_SEC` to 0.1
+- **Safer Operation**: Increase deadzones to 0.005/0.05, increase `ACTIVATION_TIME_SEC` to 1.0
 
 ### Debug and Monitoring:
 
 **Check VR data reception**:
 ```bash
-ros2 topic echo /vr_wrist_pose
+# Monitor UDP traffic on port 8888
+sudo netstat -ulnp | grep 8888
+
+# Test VR connection manually
+echo "0.0 0.0 0.0 0.0 0.0 0.0 1.0" | nc -u -w1 localhost 8888
 ```
 
-**Monitor robot targets**:
-```bash
-ros2 topic echo /robot_target_pose
+**System Status Monitoring**:
+The VR control client provides real-time debug output:
+```
+Cycle 1: Activation: 0.000, IK success: yes
+Cycle 2: Activation: 0.002, IK success: yes
+...
+Target vel: 0.0000 0.0000 0.0000 0.0000 0.0000 0.0000 0.0000 [activation: 1.000]
 ```
 
-**Monitor actual velocities sent**:
-```bash
-# Look for "Velocities sent:" in the logs
-ros2 launch franka_vr_teleop vr_control.launch.py
-```
+**Performance Indicators**:
+- **IK Success Rate**: Should be >95% during normal operation
+- **Activation Factor**: Ramps from 0.000 to 1.000 over 0.5s
+- **Target Velocities**: Range from 0.0 to ±2.0 rad/s depending on motion
 
-Expected velocity ranges:
-- **Normal operation**: 0.005-0.025 m/s (5-25mm/s)
-- **Fast movements**: Up to 0.05 m/s (50mm/s, capped)
-
-## Troubleshooting (Tested Solutions)
+## Troubleshooting
 
 ### Common Issues:
 
 **VR data not received**:
-- Check VR app is sending to port **9000** (not 9999)
-- Verify firewall allows UDP traffic: `sudo ufw allow 9000/udp`
-- Test with netcat: `nc -u -l 9000` and check for messages
+- Check VR app is sending to port **8888** (not 9000)
+- Verify firewall allows UDP traffic: `sudo ufw allow 8888/udp`
+- Test with netcat: `nc -u -l 8888` and check for VR messages
+- Ensure message format is: `x y z qx qy qz qw` (7 space-separated numbers)
 
 **Robot not responding**:
-- Verify realtime PC connection (192.168.18.1:8888)
 - Check robot is in ready state and not in protective stop
-- Ensure external activation device connected
+- Ensure external activation device is connected and activated
+- Verify joint positions are within safe limits
+- Check that `VR initialized!` message appeared
 
-**Movement too small**:
-- Increase `pose_scale` to 1.5-2.0
-- Decrease `position_deadzone` to 0.003-0.005
-- Check VR tracking quality and range
+**Movement too sluggish**:
+- Decrease `vr_smoothing` from 0.05 to 0.02 for less filtering
+- Increase joint accelerations from 4.0-6.0 to 6.0-8.0 rad/s²
+- Reduce `ACTIVATION_TIME_SEC` from 0.5 to 0.2 seconds
+- Decrease position deadzone from 0.001 to 0.0005
 
-**Control exceptions** (velocity/acceleration discontinuity):
-- System automatically recovers after 1 second
-- If persistent, reduce `pose_scale` to 0.8
-- Increase `position_deadzone` to 0.015
-- Check for VR tracking glitches
+**Control errors eliminated**:
+- **No more reflex triggers**: Joint velocity control prevents discontinuities
+- **Smooth startup**: Gradual activation prevents sudden motions  
+- **Robust IK**: Weighted solver handles near-singular configurations
+- **Continuous operation**: System designed for extended use without errors
 
-**Jittery movement**:
-- Increase smoothing_factor to 0.9
-- Increase deadzone values
-- Check VR system performance
-
-### Recovery Procedures:
-
-**Robot stops moving**:
-1. System will auto-recover after 1 second
-2. Check realtime PC console for errors
-3. If persistent, restart both systems
-
-**VR tracking lost**:
-1. System will use last known pose
-2. Re-establish VR tracking
-3. Use pose reset if needed
-
-## Technical Details (Verified Performance)
-
-### Data Flow:
-1. **VR Headset** → UDP wrist tracking data (varies by VR system)
-2. **ROS2 Node** → Processes and scales VR data (50 Hz)  
-3. **Robot Client** → Applies pose commands with smoothing (1000 Hz)
-4. **Franka Robot** → Executes smooth end-effector motion
-
-### Performance Metrics:
-- **End-to-end latency**: ~50-100ms (depending on VR system)
-- **Update rate**: 50 Hz command rate, 1000 Hz robot control
-- **Accuracy**: Sub-centimeter positioning with proper calibration
-- **Stability**: No velocity discontinuities with tuned parameters
+**Jittery or unstable movement**:
+- Increase `vr_smoothing` from 0.05 to 0.1 for more filtering
+- Increase position deadzone from 0.001 to 0.005 to reduce noise sensitivity
+- Check VR tracking quality and reduce environmental interference
 
 ### Network Protocol:
-**VR → ROS2**: Raw wrist tracking UDP messages (port 9000)
-**ROS2 → Robot**: Velocity commands in format (port 8888):
+**VR → Robot Client**: Direct UDP messages (port 8888):
 ```
-"linear_x linear_y linear_z angular_x angular_y angular_z emergency_stop reset_pose"
+"x y z qx qy qz qw"
 ```
-
-Example working command:
-```
-"0.0127 -0.0000 0.0028 -0.0134 -0.0111 0.0160 0 0"
-```
+Example: `0.123 0.456 0.789 0.0 0.0 0.0 1.0`
 
 ## Quick Start Summary
 
-1. **Build VR robot client**:
+1. **Build and run VR robot client**:
    ```bash
-   cd vr_robot_client/build && cmake .. && make
-   scp -r vr_robot_client/ user@192.168.18.1:~/
-   ```
-
-2. **Run on realtime PC (192.168.18.1)**:
-   ```bash
-   ssh user@192.168.18.1
    cd vr_robot_client/build
-   ./vr_franka_control_client 192.168.18.10
+   cmake .. && make -j4
+   ./franka_vr_control_client <robot-hostname>
    ```
 
-3. **Run on local machine**:
-   ```bash
-   source /opt/ros/humble/setup.bash
-   source ~/franka-vr-teleop/install/setup.bash
-   ros2 launch franka_vr_teleop vr_control.launch.py
-   ```
+2. **Start VR application** sending pose data to port 8888
 
-4. **Start VR tracking** to port 9000
+**This system provides professional-grade VR teleoperation with smooth, responsive control and robust error handling. The advanced motion control pipeline ensures safe, precise robot operation without the velocity discontinuities that plagued earlier systems.**
 
-**This system provides intuitive, responsive VR control of the Franka robot with built-in safety and error recovery! The robot will smoothly follow your hand movements in 3D space with millimeter precision.**
+## Demo
