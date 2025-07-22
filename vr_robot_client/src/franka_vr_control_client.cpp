@@ -1,4 +1,4 @@
-// VR-Based Cartesian Teleoperation with Automatic Error Recovery
+// VR-Based Cartesian Teleoperation
 // Copyright (c) 2023 Franka Robotics GmbH
 // Use of this source code is governed by the Apache-2.0 license, see LICENSE
 #include <cmath>
@@ -21,6 +21,8 @@
 #include <Eigen/Dense>
 
 #include "examples_common.h"
+#include "weighted_ik.h"
+#include <ruckig/ruckig.hpp>
 
 struct VRCommand
 {
@@ -29,7 +31,7 @@ struct VRCommand
     bool has_valid_data = false;
 };
 
-class SimplifiedVRController
+class VRController
 {
 private:
     std::atomic<bool> running_{true};
@@ -40,40 +42,22 @@ private:
     int server_socket_;
     const int PORT = 8888;
 
-    // Error recovery parameters
-    struct ErrorRecoveryParams
-    {
-        int max_recovery_attempts = 3;
-        int recovery_delay_ms = 1000;
-        bool enable_auto_recovery = true;
-    } recovery_params_;
-
-    // Simplified parameters for VR mapping
+    // VR mapping parameters
     struct VRParams
     {
-        double position_gain = 0.0020;    // control gain for position control
-        double orientation_gain = 0.0018; // control gain for orientation control
-        double vr_smoothing = 0.1;        // Smoothing of incoming VR data
+        double vr_smoothing = 0.05;       // Less for more responsive control
 
         // Deadzones to prevent drift from small sensor noise
         double position_deadzone = 0.001;   // 1mm
         double orientation_deadzone = 0.03; // ~1.7 degrees
 
-        // Interpolation max step size
-        double max_interp_position_step = 0.3; // 0.3m/s
-        double max_interp_orientation_step = 0.6; // 0.6rad/s
-
         // Workspace limits to keep the robot in a safe area
-        double max_position_offset = 0.6;   // 60cm from initial position
+        double max_position_offset = 0.75;   // 75cm from initial position
     } params_;
 
-    // Rename target_... to vr_target_... to clarify it's the goal from VR.
+    // VR Target Pose
     Eigen::Vector3d vr_target_position_;
     Eigen::Quaterniond vr_target_orientation_;
-
-    // This is the smooth target that updates at 1kHz.
-    Eigen::Vector3d interpolated_target_position_;
-    Eigen::Quaterniond interpolated_target_orientation_;
 
     // VR filtering state
     Eigen::Vector3d filtered_vr_position_{0, 0, 0};
@@ -85,13 +69,40 @@ private:
     Eigen::Quaterniond initial_vr_orientation_{1, 0, 0, 0};
     bool vr_initialized_ = false;
 
+    // Joint space tracking
+    std::array<double, 7> current_joint_angles_;
+    std::array<double, 7> neutral_joint_pose_;
+    std::unique_ptr<WeightedIKSolver> ik_solver_;
+    
+    // Q7 limits for BiDexHand
+    static constexpr double Q7_MIN = -0.2;
+    static constexpr double Q7_MAX = 1.9;
+    static constexpr double Q7_SEARCH_RANGE = 0.2; // look for q7 angle candidates in +/- this value in the current joint range 
+    static constexpr double Q7_STEP_SIZE = 0.01;
+
+    // Ruckig trajectory generator for smooth joint space motion
+    std::unique_ptr<ruckig::Ruckig<7>> trajectory_generator_;
+    ruckig::InputParameter<7> ruckig_input_;
+    ruckig::OutputParameter<7> ruckig_output_;
+    bool ruckig_initialized_ = false;
+    
+    // Gradual activation to prevent sudden movements
+    std::chrono::steady_clock::time_point control_start_time_;
+    static constexpr double ACTIVATION_TIME_SEC = 0.5; // Faster activation
+    
+    // Franka joint limits for responsive teleoperation 
+    static constexpr std::array<double, 7> MAX_JOINT_VELOCITY = {1.6, 1.6, 1.6, 1.6, 2.0, 2.0, 2.0};     // Increase for responsiveness
+    static constexpr std::array<double, 7> MAX_JOINT_ACCELERATION = {4.0, 4.0, 4.0, 4.0, 6.0, 6.0, 6.0}; // Increase for snappier response
+    static constexpr std::array<double, 7> MAX_JOINT_JERK = {8.0, 8.0, 8.0, 8.0, 12.0, 12.0, 12.0};  // Higher jerk for snappier response
+    static constexpr double CONTROL_CYCLE_TIME = 0.001;  // 1 kHz
+
 public:
-    SimplifiedVRController()
+    VRController()
     {
         setupNetworking();
     }
 
-    ~SimplifiedVRController()
+    ~VRController()
     {
         running_ = false;
         close(server_socket_);
@@ -312,15 +323,21 @@ private:
         vr_target_orientation_.normalize();
     }
 
-    std::array<double, 16> createPoseArray(const Eigen::Vector3d &position, const Eigen::Quaterniond &orientation)
-    {
-        Eigen::Affine3d pose;
-        pose.translation() = position;
-        pose.linear() = orientation.toRotationMatrix();
-
-        std::array<double, 16> pose_array;
-        Eigen::Map<Eigen::Matrix4d>(pose_array.data()) = pose.matrix();
-        return pose_array;
+    // Helper function to clamp q7 within limits
+    double clampQ7(double q7) const {
+        return std::max(Q7_MIN, std::min(Q7_MAX, q7));
+    }
+    
+    // Convert Eigen types to arrays for geofik interface
+    std::array<double, 3> eigenToArray3(const Eigen::Vector3d& vec) const {
+        return {vec.x(), vec.y(), vec.z()};
+    }
+    
+    std::array<double, 9> quaternionToRotationArray(const Eigen::Quaterniond& quat) const {
+        Eigen::Matrix3d rot = quat.toRotationMatrix();
+        return {rot(0,0), rot(0,1), rot(0,2),
+                rot(1,0), rot(1,1), rot(1,2), 
+                rot(2,0), rot(2,1), rot(2,2)};
     }
 
 public:
@@ -363,27 +380,48 @@ public:
                         {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}}, {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}},
                         {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}}, {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}});
 
-                    // Moderate impedance for smooth motion
-                    robot.setCartesianImpedance({{1000, 1000, 1000, 100, 100, 100}});
-                }
-                else
-                {
-                    // After recovery, reinitialize settings
-                    reinitializeRobotSettings(robot);
-                }
+            // Joint impedance for smooth motion (instead of Cartesian)
+            robot.setJointImpedance({{3000, 3000, 3000, 2500, 2500, 2000, 2000}});
 
-                // Initialize poses from the robot's current state
-                franka::RobotState state = robot.readOnce();
-                initial_robot_pose_ = Eigen::Affine3d(Eigen::Matrix4d::Map(state.O_T_EE.data()));
+            // Initialize poses from the robot's current state
+            franka::RobotState state = robot.readOnce();
+            initial_robot_pose_ = Eigen::Affine3d(Eigen::Matrix4d::Map(state.O_T_EE.data()));
+            
+            // Initialize joint angles
+            for (int i = 0; i < 7; i++) {
+                current_joint_angles_[i] = state.q[i];
+                neutral_joint_pose_[i] = q_goal[i];  // Use the initial joint configuration as neutral
+            }
+            
+            // Create IK solver with neutral pose and weights
+            ik_solver_ = std::make_unique<WeightedIKSolver>(
+                neutral_joint_pose_,
+                1.0,  // manipulability weight
+                0.5,  // neutral distance weight  
+                3.0,  // current distance weight - need to strongly prioritize current state
+                false // verbose = false for real-time use
+            );
+            
+            // Initialize Ruckig trajectory generator (but don't set initial state yet)
+            trajectory_generator_ = std::make_unique<ruckig::Ruckig<7>>();
+            trajectory_generator_->delta_time = CONTROL_CYCLE_TIME;
+            
+            // Set up joint limits for safe teleoperation (but don't set positions yet)
+            for (size_t i = 0; i < 7; ++i) {
+                ruckig_input_.max_velocity[i] = MAX_JOINT_VELOCITY[i];
+                ruckig_input_.max_acceleration[i] = MAX_JOINT_ACCELERATION[i];
+                ruckig_input_.max_jerk[i] = MAX_JOINT_JERK[i];
+                ruckig_input_.target_velocity[i] = 0.0;
+                ruckig_input_.target_acceleration[i] = 0.0;
+            }
+            
+            std::cout << "Ruckig trajectory generator configured with 7 DOFs" << std::endl;
 
-                // Initialize all targets to the robot's starting pose
-                vr_target_position_ = initial_robot_pose_.translation();
-                interpolated_target_position_ = initial_robot_pose_.translation();
+            // Initialize VR targets to the robot's starting pose
+            vr_target_position_ = initial_robot_pose_.translation();
+            vr_target_orientation_ = Eigen::Quaterniond(initial_robot_pose_.rotation());
 
-                vr_target_orientation_ = Eigen::Quaterniond(initial_robot_pose_.rotation());
-                interpolated_target_orientation_ = Eigen::Quaterniond(initial_robot_pose_.rotation());
-
-                std::thread network_thread(&SimplifiedVRController::networkThread, this);
+            std::thread network_thread(&VRController::networkThread, this);
 
                 std::cout << "Waiting for VR data..." << std::endl;
                 while (!vr_initialized_ && running_ && !should_stop_)
@@ -391,11 +429,11 @@ public:
                     std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 }
 
-                if (vr_initialized_ && !should_stop_)
-                {
-                    std::cout << "VR initialized! Starting active control." << std::endl;
-                    this->runVRControl(robot);
-                }
+            if (vr_initialized_)
+            {
+                std::cout << "VR initialized! Starting real-time control." << std::endl;
+                this->runVRControl(robot);
+            }
 
                 running_ = false;
                 if (network_thread.joinable())
@@ -472,16 +510,9 @@ private:
     {
         auto vr_control_callback = [this](
                                        const franka::RobotState &robot_state,
-                                       franka::Duration period) -> franka::CartesianPose
+                                       franka::Duration period) -> franka::JointVelocities
         {
-            // Check for stop signal
-            if (should_stop_)
-            {
-                // Return current pose to stop smoothly
-                return franka::MotionFinished(robot_state.O_T_EE_c);
-            }
-
-            //Update the ultimate goal from VR (~ 50Hz)
+            // Update VR targets from latest command (~50Hz)
             VRCommand cmd;
             {
                 std::lock_guard<std::mutex> lock(command_mutex_);
@@ -489,49 +520,107 @@ private:
             }
             updateVRTargets(cmd);
 
-            // Move the interpolated target a small step towards the ultimate VR target.
-            // Define max speeds for the interpolated target
-            const double max_step_distance = params_.max_interp_position_step * period.toSec();
-            const double max_step_angle = params_.max_interp_orientation_step * period.toSec();
-
-            // Position interpolation
-            Eigen::Vector3d pos_error = vr_target_position_ - interpolated_target_position_;
-            double distance = pos_error.norm();
-            if (distance > 1e-6)
-            { // Avoid normalization of zero vector
-                double step_distance = std::min(max_step_distance, distance);
-                interpolated_target_position_ += (pos_error / distance) * step_distance;
+            // Initialize Ruckig with actual robot state on first call
+            if (!ruckig_initialized_) {
+                for (int i = 0; i < 7; i++) {
+                    current_joint_angles_[i] = robot_state.q[i];
+                    ruckig_input_.current_position[i] = robot_state.q[i];
+                    ruckig_input_.current_velocity[i] = 0.0; // Start with zero velocity command
+                    ruckig_input_.current_acceleration[i] = 0.0; // Start with zero acceleration
+                    ruckig_input_.target_position[i] = robot_state.q[i]; // Start with current position as target
+                    ruckig_input_.target_velocity[i] = 0.0; // Start with zero target velocity
+                }
+                control_start_time_ = std::chrono::steady_clock::now();
+                ruckig_initialized_ = true;
+                std::cout << "Ruckig initialized for velocity control!" << std::endl;
+                std::cout << "Starting with zero velocity commands to smoothly take over control" << std::endl;
+            } else {
+                // Update current joint state for Ruckig using previous Ruckig output for continuity
+                for (int i = 0; i < 7; i++) {
+                    current_joint_angles_[i] = robot_state.q[i];
+                    ruckig_input_.current_position[i] = robot_state.q[i];
+                    ruckig_input_.current_velocity[i] = ruckig_output_.new_velocity[i]; // Use our own velocity command for continuity
+                    ruckig_input_.current_acceleration[i] = ruckig_output_.new_acceleration[i]; // Use Ruckig's acceleration
+                }
             }
-
-            // Orientation interpolation
-            double angle_error = interpolated_target_orientation_.angularDistance(vr_target_orientation_);
-            if (angle_error > 1e-6) {
-                // Limit the angular step size (same logic as position)
-                double step_angle = std::min(max_step_angle, angle_error);
-                double slerp_fraction = step_angle / angle_error;
-                
-                interpolated_target_orientation_ = interpolated_target_orientation_.slerp(slerp_fraction, vr_target_orientation_);
+            
+            // Calculate activation factor for gradual activation
+            auto current_time = std::chrono::steady_clock::now();
+            double elapsed_sec = std::chrono::duration<double>(current_time - control_start_time_).count();
+            double activation_factor = std::min(1.0, elapsed_sec / ACTIVATION_TIME_SEC);
+            
+            // Solve IK for VR target pose to get target joint angles
+            std::array<double, 3> target_pos = eigenToArray3(vr_target_position_);
+            std::array<double, 9> target_rot = quaternionToRotationArray(vr_target_orientation_);
+            
+            // Calculate q7 search range around current value
+            double current_q7 = current_joint_angles_[6];
+            double q7_start = std::max(Q7_MIN, current_q7 - Q7_SEARCH_RANGE);
+            double q7_end = std::min(Q7_MAX, current_q7 + Q7_SEARCH_RANGE);
+            
+            // Solve IK with weighted optimization
+            WeightedIKResult ik_result = ik_solver_->solve_q7(
+                target_pos, target_rot, current_joint_angles_,
+                q7_start, q7_end, Q7_STEP_SIZE
+            );
+            
+            // Debug output for velocity control
+            static int debug_counter = 0;
+            debug_counter++;
+            if (debug_counter <= 5 || debug_counter % 100 == 0) {
+                std::cout << "Cycle " << debug_counter << ": Activation: " << std::fixed << std::setprecision(3) << activation_factor 
+                          << ", IK success: " << (ik_result.success ? "yes" : "no") << std::endl;
             }
-
-            // The P-controller for the interpolated target.
-            Eigen::Map<const Eigen::Matrix4d> pose_map(robot_state.O_T_EE_c.data());
-            Eigen::Affine3d current_transform(pose_map);
-            Eigen::Vector3d current_position = current_transform.translation();
-            Eigen::Quaterniond current_orientation(current_transform.linear());
-
-            const double position_gain = params_.position_gain;
-            const double orientation_gain = params_.orientation_gain;
-
-            Eigen::Vector3d next_position = current_position + position_gain * (interpolated_target_position_ - current_position);
-            Eigen::Quaterniond next_orientation = current_orientation.slerp(orientation_gain, interpolated_target_orientation_);
-
-            auto pose_array = createPoseArray(next_position, next_orientation);
+            
+            // Set Ruckig targets based on IK solution and gradual activation
+            if (ruckig_initialized_) {
+                if (ik_result.success) {
+                    // Gradually blend from current position to IK solution for target position
+                    for (int i = 0; i < 7; i++) {
+                        double current_pos = current_joint_angles_[i];
+                        double ik_target_pos = ik_result.joint_angles[i];
+                        ruckig_input_.target_position[i] = current_pos + activation_factor * (ik_target_pos - current_pos);
+                        // Always target zero velocity for smooth stops
+                        ruckig_input_.target_velocity[i] = 0.0;
+                    }
+                    // Enforce q7 limits
+                    ruckig_input_.target_position[6] = clampQ7(ruckig_input_.target_position[6]);
+                }
+                // If IK fails, keep previous targets (don't change target_position/velocity)
+            }
+            
+            // Always run Ruckig to generate smooth velocity commands
+            ruckig::Result ruckig_result = trajectory_generator_->update(ruckig_input_, ruckig_output_);
+            
+            std::array<double, 7> target_joint_velocities;
+            
+            if (ruckig_result == ruckig::Result::Working || ruckig_result == ruckig::Result::Finished) {
+                // Use Ruckig's smooth velocity output
+                for (int i = 0; i < 7; i++) {
+                    target_joint_velocities[i] = ruckig_output_.new_velocity[i];
+                }
+            } else {
+                // Emergency fallback: zero velocity to stop smoothly
+                for (int i = 0; i < 7; i++) {
+                    target_joint_velocities[i] = 0.0;
+                }
+                if (debug_counter % 100 == 0) {
+                    std::cout << "Ruckig error, using zero velocity for safety" << std::endl;
+                }
+            }
+            
+            // Debug output for the first few commands
+            // if (debug_counter <= 10 || debug_counter % 100 == 0) {
+            //     std::cout << "Target vel: ";
+            //     for (int i = 0; i < 7; i++) std::cout << std::fixed << std::setprecision(4) << target_joint_velocities[i] << " ";
+            //     std::cout << " [activation: " << std::setprecision(3) << activation_factor << "]" << std::endl;
+            // }
 
             if (!running_)
             {
-                return franka::MotionFinished(pose_array);
+                return franka::MotionFinished(franka::JointVelocities({0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}));
             }
-            return pose_array;
+            return franka::JointVelocities(target_joint_velocities);
         };
 
         // Remove the inner try-catch since we want exceptions to propagate to the outer recovery loop
@@ -561,13 +650,8 @@ int main(int argc, char **argv)
 
     try
     {
-        SimplifiedVRController controller;
-        g_controller = &controller;
-
-        // Set up signal handler for graceful shutdown
-        std::signal(SIGINT, signalHandler);
-        std::signal(SIGTERM, signalHandler);
-
+        VRController controller;
+        // Add a signal handler to gracefully shut down on Ctrl+C
         controller.run(argv[1]);
     }
     catch (const std::exception &e)

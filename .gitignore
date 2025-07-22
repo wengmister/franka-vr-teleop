@@ -6,5 +6,5 @@
 # build artifacts
 /vr_robot_client/build/
 
-# vscode
+/.venv
 /.vscode
