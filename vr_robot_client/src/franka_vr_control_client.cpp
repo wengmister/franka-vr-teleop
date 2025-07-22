@@ -1,4 +1,4 @@
-// VR-Based Cartesian Teleoperation - Final Version
+// VR-Based Cartesian Teleoperation
 // Copyright (c) 2023 Franka Robotics GmbH
 // Use of this source code is governed by the Apache-2.0 license, see LICENSE
 #include <cmath>
@@ -29,7 +29,7 @@ struct VRCommand
     bool has_valid_data = false;
 };
 
-class SimplifiedVRController
+class VRController
 {
 private:
     std::atomic<bool> running_{true};
@@ -50,15 +50,11 @@ private:
 
         // Workspace limits to keep the robot in a safe area
         double max_position_offset = 0.75;   // 75cm from initial position
-        
-        // Note: Removed interpolation gains - now using Ruckig for trajectory generation
     } params_;
 
-    // Rename target_... to vr_target_... to clarify it's the goal from VR.
+    // VR Target Pose
     Eigen::Vector3d vr_target_position_;
     Eigen::Quaterniond vr_target_orientation_;
-
-    // Note: Removed interpolated targets - now using Ruckig for smooth trajectory generation
 
     // VR filtering state
     Eigen::Vector3d filtered_vr_position_{0, 0, 0};
@@ -75,10 +71,10 @@ private:
     std::array<double, 7> neutral_joint_pose_;
     std::unique_ptr<WeightedIKSolver> ik_solver_;
     
-    // Q7 limits
+    // Q7 limits for BiDexHand
     static constexpr double Q7_MIN = -0.2;
     static constexpr double Q7_MAX = 1.9;
-    static constexpr double Q7_SEARCH_RANGE = 0.1;
+    static constexpr double Q7_SEARCH_RANGE = 0.2; // look for q7 angle candidates in +/- this value in the current joint range 
     static constexpr double Q7_STEP_SIZE = 0.01;
 
     // Ruckig trajectory generator for smooth joint space motion
@@ -98,12 +94,12 @@ private:
     static constexpr double CONTROL_CYCLE_TIME = 0.001;  // 1 kHz
 
 public:
-    SimplifiedVRController()
+    VRController()
     {
         setupNetworking();
     }
 
-    ~SimplifiedVRController()
+    ~VRController()
     {
         running_ = false;
         close(server_socket_);
@@ -289,8 +285,8 @@ public:
             ik_solver_ = std::make_unique<WeightedIKSolver>(
                 neutral_joint_pose_,
                 1.0,  // manipulability weight
-                0.5,  // neutral distance weight  
-                2.0,  // current distance weight
+                0.25,  // neutral distance weight  
+                3.0,  // current distance weight - need to strongly prioritize current state
                 false // verbose = false for real-time use
             );
             
@@ -313,7 +309,7 @@ public:
             vr_target_position_ = initial_robot_pose_.translation();
             vr_target_orientation_ = Eigen::Quaterniond(initial_robot_pose_.rotation());
 
-            std::thread network_thread(&SimplifiedVRController::networkThread, this);
+            std::thread network_thread(&VRController::networkThread, this);
 
             std::cout << "Waiting for VR data..." << std::endl;
             while (!vr_initialized_ && running_)
@@ -323,7 +319,7 @@ public:
 
             if (vr_initialized_)
             {
-                std::cout << "VR initialized! Starting active control." << std::endl;
+                std::cout << "VR initialized! Starting real-time control." << std::endl;
                 this->runVRControl(robot);
             }
 
@@ -365,7 +361,7 @@ private:
                 }
                 control_start_time_ = std::chrono::steady_clock::now();
                 ruckig_initialized_ = true;
-                std::cout << "Ruckig initialized for velocity control at control start" << std::endl;
+                std::cout << "Ruckig initialized for velocity control!" << std::endl;
                 std::cout << "Starting with zero velocity commands to smoothly take over control" << std::endl;
             } else {
                 // Update current joint state for Ruckig using previous Ruckig output for continuity
@@ -443,11 +439,11 @@ private:
             }
             
             // Debug output for the first few commands
-            if (debug_counter <= 10 || debug_counter % 100 == 0) {
-                std::cout << "Target vel: ";
-                for (int i = 0; i < 7; i++) std::cout << std::fixed << std::setprecision(4) << target_joint_velocities[i] << " ";
-                std::cout << " [activation: " << std::setprecision(3) << activation_factor << "]" << std::endl;
-            }
+            // if (debug_counter <= 10 || debug_counter % 100 == 0) {
+            //     std::cout << "Target vel: ";
+            //     for (int i = 0; i < 7; i++) std::cout << std::fixed << std::setprecision(4) << target_joint_velocities[i] << " ";
+            //     std::cout << " [activation: " << std::setprecision(3) << activation_factor << "]" << std::endl;
+            // }
 
             if (!running_)
             {
@@ -477,9 +473,8 @@ int main(int argc, char **argv)
 
     try
     {
-        SimplifiedVRController controller;
+        VRController controller;
         // Add a signal handler to gracefully shut down on Ctrl+C
-        // std::signal(SIGINT, [](int signum){ controller.stop(); }); // Example, needs a stop() method
         controller.run(argv[1]);
     }
     catch (const std::exception &e)
