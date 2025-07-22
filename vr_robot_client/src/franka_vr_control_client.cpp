@@ -42,14 +42,14 @@ private:
     // VR mapping parameters
     struct VRParams
     {
-        double vr_smoothing = 0.1;        // Smoothing of incoming VR data
+        double vr_smoothing = 0.05;       // Less for more responsive control
 
         // Deadzones to prevent drift from small sensor noise
         double position_deadzone = 0.001;   // 1mm
         double orientation_deadzone = 0.03; // ~1.7 degrees
 
         // Workspace limits to keep the robot in a safe area
-        double max_position_offset = 0.6;   // 60cm from initial position
+        double max_position_offset = 0.75;   // 75cm from initial position
         
         // Note: Removed interpolation gains - now using Ruckig for trajectory generation
     } params_;
@@ -78,7 +78,7 @@ private:
     // Q7 limits
     static constexpr double Q7_MIN = -0.2;
     static constexpr double Q7_MAX = 1.9;
-    static constexpr double Q7_SEARCH_RANGE = 0.25;
+    static constexpr double Q7_SEARCH_RANGE = 0.1;
     static constexpr double Q7_STEP_SIZE = 0.01;
 
     // Ruckig trajectory generator for smooth joint space motion
@@ -89,12 +89,12 @@ private:
     
     // Gradual activation to prevent sudden movements
     std::chrono::steady_clock::time_point control_start_time_;
-    static constexpr double ACTIVATION_TIME_SEC = 2.0; // Gradual activation over 2 seconds
+    static constexpr double ACTIVATION_TIME_SEC = 0.5; // Faster activation
     
-    // Franka joint limits for safe teleoperation 
-    static constexpr std::array<double, 7> MAX_JOINT_VELOCITY = {1.5, 1.5, 1.5, 1.5, 2.0, 2.0, 2.0};
-    static constexpr std::array<double, 7> MAX_JOINT_ACCELERATION = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
-    static constexpr std::array<double, 7> MAX_JOINT_JERK = {0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5};
+    // Franka joint limits for responsive teleoperation 
+    static constexpr std::array<double, 7> MAX_JOINT_VELOCITY = {1.5, 1.5, 1.5, 1.5, 2.0, 2.0, 2.0};     // Increase for responsiveness
+    static constexpr std::array<double, 7> MAX_JOINT_ACCELERATION = {4.0, 4.0, 4.0, 4.0, 5.0, 5.0, 5.0}; // Increase for snappier response
+    static constexpr std::array<double, 7> MAX_JOINT_JERK = {10.0, 10.0, 10.0, 10.0, 15.0, 15.0, 15.0};  // Higher jerk for snappier response
     static constexpr double CONTROL_CYCLE_TIME = 0.001;  // 1 kHz
 
 public:
