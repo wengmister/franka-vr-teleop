@@ -6,7 +6,8 @@
                 "${workspaceFolder}/**",
                 "/opt/ros/jazzy/include",
                 "~/ws/franka/install/include",
-                "/usr/include/eigen3"
+                "/usr/include/eigen3",
+                "${workspaceFolder}/vr_robot_client/include"
             ],
             "defines": [],
             "compilerPath": "/usr/bin/g++-13",

@@ -19,6 +19,7 @@
 #include <Eigen/Dense>
 
 #include "examples_common.h"
+#include "weighted_ik.h"
 
 struct VRCommand
 {
@@ -73,6 +74,17 @@ private:
     Eigen::Vector3d initial_vr_position_{0, 0, 0};
     Eigen::Quaterniond initial_vr_orientation_{1, 0, 0, 0};
     bool vr_initialized_ = false;
+
+    // Joint space tracking
+    std::array<double, 7> current_joint_angles_;
+    std::array<double, 7> neutral_joint_pose_;
+    std::unique_ptr<WeightedIKSolver> ik_solver_;
+    
+    // Q7 limits
+    static constexpr double Q7_MIN = -0.2;
+    static constexpr double Q7_MAX = 1.9;
+    static constexpr double Q7_SEARCH_RANGE = 0.25;
+    static constexpr double Q7_STEP_SIZE = 0.01;
 
 public:
     SimplifiedVRController()
@@ -201,15 +213,21 @@ private:
         vr_target_orientation_.normalize();
     }
 
-    std::array<double, 16> createPoseArray(const Eigen::Vector3d &position, const Eigen::Quaterniond &orientation)
-    {
-        Eigen::Affine3d pose;
-        pose.translation() = position;
-        pose.linear() = orientation.toRotationMatrix();
-
-        std::array<double, 16> pose_array;
-        Eigen::Map<Eigen::Matrix4d>(pose_array.data()) = pose.matrix();
-        return pose_array;
+    // Helper function to clamp q7 within limits
+    double clampQ7(double q7) const {
+        return std::max(Q7_MIN, std::min(Q7_MAX, q7));
+    }
+    
+    // Convert Eigen types to arrays for geofik interface
+    std::array<double, 3> eigenToArray3(const Eigen::Vector3d& vec) const {
+        return {vec.x(), vec.y(), vec.z()};
+    }
+    
+    std::array<double, 9> quaternionToRotationArray(const Eigen::Quaterniond& quat) const {
+        Eigen::Matrix3d rot = quat.toRotationMatrix();
+        return {rot(0,0), rot(0,1), rot(0,2),
+                rot(1,0), rot(1,1), rot(1,2), 
+                rot(2,0), rot(2,1), rot(2,2)};
     }
 
 public:
@@ -243,12 +261,27 @@ public:
                 {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}}, {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}},
                 {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}}, {{80.0, 80.0, 80.0, 80.0, 80.0, 80.0}});
 
-            // Moderate impedance for smooth motion
-            robot.setCartesianImpedance({{1000, 1000, 1000, 100, 100, 100}});
+            // Joint impedance for smooth motion (instead of Cartesian)
+            robot.setJointImpedance({{3000, 3000, 3000, 2500, 2500, 2000, 2000}});
 
             // Initialize poses from the robot's current state
             franka::RobotState state = robot.readOnce();
             initial_robot_pose_ = Eigen::Affine3d(Eigen::Matrix4d::Map(state.O_T_EE.data()));
+            
+            // Initialize joint angles
+            for (int i = 0; i < 7; i++) {
+                current_joint_angles_[i] = state.q[i];
+                neutral_joint_pose_[i] = q_goal[i];  // Use the initial joint configuration as neutral
+            }
+            
+            // Create IK solver with neutral pose and weights
+            ik_solver_ = std::make_unique<WeightedIKSolver>(
+                neutral_joint_pose_,
+                1.0,  // manipulability weight
+                0.5,  // neutral distance weight  
+                2.0,  // current distance weight
+                false // verbose = false for real-time use
+            );
 
             // Initialize all targets to the robot's starting pose
             vr_target_position_ = initial_robot_pose_.translation();
@@ -287,7 +320,7 @@ private:
     {
         auto vr_control_callback = [this](
                                        const franka::RobotState &robot_state,
-                                       franka::Duration period) -> franka::CartesianPose
+                                       franka::Duration period) -> franka::JointPositions
         {
             //Update the ultimate goal from VR (~ 50Hz)
             VRCommand cmd;
@@ -321,25 +354,44 @@ private:
                 interpolated_target_orientation_ = interpolated_target_orientation_.slerp(slerp_fraction, vr_target_orientation_);
             }
 
-            // The P-controller for the interpolated target.
-            Eigen::Map<const Eigen::Matrix4d> pose_map(robot_state.O_T_EE_c.data());
-            Eigen::Affine3d current_transform(pose_map);
-            Eigen::Vector3d current_position = current_transform.translation();
-            Eigen::Quaterniond current_orientation(current_transform.linear());
-
-            const double position_gain = params_.position_gain;
-            const double orientation_gain = params_.orientation_gain;
-
-            Eigen::Vector3d next_position = current_position + position_gain * (interpolated_target_position_ - current_position);
-            Eigen::Quaterniond next_orientation = current_orientation.slerp(orientation_gain, interpolated_target_orientation_);
-
-            auto pose_array = createPoseArray(next_position, next_orientation);
+            // Update current joint angles from robot state
+            for (int i = 0; i < 7; i++) {
+                current_joint_angles_[i] = robot_state.q[i];
+            }
+            
+            // Convert target pose to arrays for IK solver
+            std::array<double, 3> target_pos = eigenToArray3(interpolated_target_position_);
+            std::array<double, 9> target_rot = quaternionToRotationArray(interpolated_target_orientation_);
+            
+            // Calculate q7 search range around current value
+            double current_q7 = current_joint_angles_[6];
+            double q7_start = std::max(Q7_MIN, current_q7 - Q7_SEARCH_RANGE);
+            double q7_end = std::min(Q7_MAX, current_q7 + Q7_SEARCH_RANGE);
+            
+            // Solve IK with weighted optimization
+            WeightedIKResult ik_result = ik_solver_->solve_q7(
+                target_pos, target_rot, current_joint_angles_,
+                q7_start, q7_end, Q7_STEP_SIZE
+            );
+            
+            std::array<double, 7> target_joint_angles;
+            
+            if (ik_result.success) {
+                // Use IK solution
+                target_joint_angles = ik_result.joint_angles;
+                
+                // Enforce q7 limits as safety measure
+                target_joint_angles[6] = clampQ7(target_joint_angles[6]);
+            } else {
+                // Fallback: keep current joint angles if IK fails
+                target_joint_angles = current_joint_angles_;
+            }
 
             if (!running_)
             {
-                return franka::MotionFinished(pose_array);
+                return franka::MotionFinished(franka::JointPositions(target_joint_angles));
             }
-            return pose_array;
+            return franka::JointPositions(target_joint_angles);
         };
 
         try
