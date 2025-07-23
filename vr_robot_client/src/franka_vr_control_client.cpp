@@ -74,8 +74,9 @@ private:
     // Q7 limits for BiDexHand
     static constexpr double Q7_MIN = -0.2;
     static constexpr double Q7_MAX = 1.9;
-    static constexpr double Q7_SEARCH_RANGE = 0.2; // look for q7 angle candidates in +/- this value in the current joint range 
-    static constexpr double Q7_STEP_SIZE = 0.01;
+    static constexpr double Q7_SEARCH_RANGE = 0.25; // look for q7 angle candidates in +/- this value in the current joint range 
+    static constexpr double Q7_OPTIMIZATION_TOLERANCE = 1e-6; // Tolerance for optimization
+    static constexpr int Q7_MAX_ITERATIONS = 100; // Max iterations for optimization
 
     // Ruckig trajectory generator for smooth joint space motion
     std::unique_ptr<ruckig::Ruckig<7>> trajectory_generator_;
@@ -388,9 +389,9 @@ private:
             double q7_end = std::min(Q7_MAX, current_q7 + Q7_SEARCH_RANGE);
             
             // Solve IK with weighted optimization
-            WeightedIKResult ik_result = ik_solver_->solve_q7(
+            WeightedIKResult ik_result = ik_solver_->solve_q7_optimized(
                 target_pos, target_rot, current_joint_angles_,
-                q7_start, q7_end, Q7_STEP_SIZE
+                q7_start, q7_end, Q7_OPTIMIZATION_TOLERANCE, Q7_MAX_ITERATIONS
             );
             
             // Debug output for velocity control

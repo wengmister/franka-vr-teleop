@@ -6,6 +6,7 @@
 #include <iomanip>
 #include <chrono>
 #include <limits>
+#include <cmath>
 #include "Eigen/Dense"
 #include "geofik.h"
 
@@ -27,6 +28,7 @@ struct WeightedIKResult {
     int total_solutions_found;
     int valid_solutions_count;
     int q7_values_tested;
+    int optimization_iterations;  // Number of iterations used by optimization algorithm
     long duration_microseconds;
 };
 
@@ -46,6 +48,25 @@ private:
     double calculate_manipulability(const std::array<std::array<double, 6>, 7>& J) const;
     double calculate_distance(const std::array<double, 7>& q1, const std::array<double, 7>& q2) const;
     double compute_score(double manipulability, double neutral_dist, double current_dist) const;
+    
+    // Cost function for optimization
+    double evaluate_q7_cost(
+        double q7,
+        const std::array<double, 3>& target_position,
+        const std::array<double, 9>& target_orientation,
+        const std::array<double, 7>& current_pose
+    ) const;
+    
+    // 1D optimization algorithms
+    double brent_optimize(
+        double ax, double bx, double cx,
+        const std::array<double, 3>& target_position,
+        const std::array<double, 9>& target_orientation,
+        const std::array<double, 7>& current_pose,
+        double tolerance,
+        int max_iterations,
+        int& iterations_used
+    ) const;
 
 public:
     // Constructor - only takes robot-specific parameters that don't change
@@ -65,6 +86,17 @@ public:
         double q7_start,
         double q7_end,
         double step_size
+    );
+    
+    // Optimized solving method using 1D optimization instead of grid search
+    WeightedIKResult solve_q7_optimized(
+        const std::array<double, 3>& target_position,
+        const std::array<double, 9>& target_orientation,
+        const std::array<double, 7>& current_pose,  // Current robot state
+        double q7_min,
+        double q7_max,
+        double tolerance = 1e-6,
+        int max_iterations = 100
     );
     
     // Update weights without recreating object
