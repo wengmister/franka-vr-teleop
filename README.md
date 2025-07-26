@@ -85,7 +85,7 @@ Example message:
 
 ```bash
 cd vr_robot_client/build
-./franka_vr_control_client <robot-hostname>
+./franka_vr_control_client <robot-hostname> [bidexhand]
 ```
 
 Expected output:
@@ -103,6 +103,8 @@ VR initialized! Starting real-time control.
 Ruckig initialized for velocity control!
 Starting with zero velocity commands to smoothly take over control
 ```
+
+When [bidexhand] is set to `true`, IK solver will limit the joint range of J7 to prevent damaging the servo sleeve attachment. Argument currently defaults to true.
 
 ### 2. Start VR Application
 

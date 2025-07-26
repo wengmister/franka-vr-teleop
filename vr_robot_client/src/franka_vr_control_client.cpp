@@ -71,9 +71,9 @@ private:
     std::array<double, 7> neutral_joint_pose_;
     std::unique_ptr<WeightedIKSolver> ik_solver_;
     
-    // Q7 limits for BiDexHand
-    static constexpr double Q7_MIN = -0.2;
-    static constexpr double Q7_MAX = 1.9;
+    // Q7 limits
+    double Q7_MIN;
+    double Q7_MAX;
     static constexpr double Q7_SEARCH_RANGE = 0.25; // look for q7 angle candidates in +/- this value in the current joint range 
     static constexpr double Q7_OPTIMIZATION_TOLERANCE = 1e-6; // Tolerance for optimization
     static constexpr int Q7_MAX_ITERATIONS = 100; // Max iterations for optimization
@@ -95,7 +95,8 @@ private:
     static constexpr double CONTROL_CYCLE_TIME = 0.001;  // 1 kHz
 
 public:
-    VRController()
+    VRController(bool bidexhand = true)
+        : Q7_MIN(bidexhand ? -0.2 : -2.89), Q7_MAX(bidexhand ? 1.9 : 2.89)
     {
         setupNetworking();
     }
@@ -466,15 +467,23 @@ private:
 
 int main(int argc, char **argv)
 {
-    if (argc != 2)
+    if (argc < 2 || argc > 3)
     {
-        std::cerr << "Usage: " << argv[0] << " <robot-hostname>" << std::endl;
+        std::cerr << "Usage: " << argv[0] << " <robot-hostname> [bidexhand]" << std::endl;
+        std::cerr << "  bidexhand: true (default) for BiDexHand limits, false for full range" << std::endl;
         return -1;
+    }
+
+    bool bidexhand = true;
+    if (argc == 3)
+    {
+        std::string bidexhand_arg = argv[2];
+        bidexhand = (bidexhand_arg == "true" || bidexhand_arg == "1");
     }
 
     try
     {
-        VRController controller;
+        VRController controller(bidexhand);
         // Add a signal handler to gracefully shut down on Ctrl+C
         controller.run(argv[1]);
     }
