@@ -20,8 +20,8 @@ class VRToRobotConverter(Node):
         self.declare_parameter('vr_udp_port', 9999)
         self.declare_parameter('robot_udp_ip', '192.168.18.1')
         self.declare_parameter('robot_udp_port', 8888)
-        self.declare_parameter('smoothing_factor', 0.1)
-        self.declare_parameter('control_rate', 50.0)  # Hz
+        self.declare_parameter('smoothing_factor', 0.7)
+        self.declare_parameter('control_rate', 100.0)  # Hz
         
         # Get parameters
         self.vr_udp_ip = self.get_parameter('vr_udp_ip').value
@@ -211,7 +211,7 @@ class VRToRobotConverter(Node):
                 command_frequency = self.commands_sent / (current_time - self.last_log_time)
                 vr_frequency = self.vr_messages_received / (current_time - self.last_log_time)
                 self.get_logger().info(
-                    f'VR input: {vr_frequency:.1f} Hz | Command output: {command_frequency:.1f} Hz | '
+                    f'VR UDP sampling: {vr_frequency:.1f} Hz | '
                     f'Target pos: [{target_position[0]:.3f}, {target_position[1]:.3f}, {target_position[2]:.3f}] | '
                     f'VR delta: [{self.smoothed_position[0]:.3f}, {self.smoothed_position[1]:.3f}, {self.smoothed_position[2]:.3f}]'
                 )
