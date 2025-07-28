@@ -248,13 +248,13 @@ public:
             setDefaultBehavior(robot);
 
             // Move to a suitable starting joint configuration
-            std::array<double, 7> q_goal = {{60.0 * M_PI / 180.0,
-                                             -55.0 * M_PI / 180.0,
-                                             -70.0 * M_PI / 180.0,
-                                             -100.0 * M_PI / 180.0,
-                                             -30.0 * M_PI / 180.0,
-                                             160.0 * M_PI / 180.0,
-                                             30.0 * M_PI / 180.0}};
+            std::array<double, 7> q_goal = {{0.0,
+                                             -0.812,
+                                             -0.123,
+                                             -2.0,
+                                             0.0,
+                                             2.8,
+                                             0.9}};
             MotionGenerator motion_generator(0.5, q_goal);
             std::cout << "WARNING: This example will move the robot! "
                       << "Please make sure to have the user stop button at hand!" << std::endl
