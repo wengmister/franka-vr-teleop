@@ -13,7 +13,7 @@ VR Headset → UDP → VR Robot Client (Realtime PC) → libfranka → Franka Ro
 
 1. **VR Headset**: Streams hand tracking data via UDP (port 8888)
 2. **VR Robot Client**: Real-time system with advanced motion control:
-   - **Weighted IK**: Optimizes joint configurations for manipulability and smoothness. This is a custom implementation adopted from [PC Lopez-Custodio et al.'s work, GeoFIK](https://github.com/PabloLopezCustodio/GeoFIK). (This is an amazing analytical solver for Franka)
+   - **Weighted IK**: Optimizes joint configurations for manipulability, smoothness, and base stability. This is a custom implementation adopted from [PC Lopez-Custodio et al.'s work, GeoFIK](https://github.com/PabloLopezCustodio/GeoFIK).
    - **Ruckig Trajectory Generator**: Provides jerk-limited, time-optimal motion profiles  
    - **Joint-Space Velocity Control**: Direct velocity commands for responsive control
    - **Real-time Processing**: 1kHz control loop with <1ms trajectory calculations
@@ -36,7 +36,7 @@ vr_robot_client/
 ├── include/
 │   ├── examples_common.h
 │   ├── geofik.h           # Geometric inverse kinematics
-│   └── weighted_ik.h      # Weighted IK solver
+│   └── weighted_ik.h      # Weighted IK solver with optimization and stabilization
 ├── src/
 │   ├── examples_common.cpp
 │   ├── geofik.cpp         # Franka kinematic functions
@@ -59,7 +59,7 @@ make -j4
 - **libfranka**: Real-time robot control interface
 - **Ruckig**: Time-optimal trajectory generation with jerk constraints
 - **geofik**: Custom geometric inverse kinematics library for Franka
-- **weighted_ik**: Multi-objective IK solver optimizing manipulability and joint limits
+- **weighted_ik**: Multi-objective IK solver optimizing manipulability, joint limits, and base stability
 
 ### VR Headset Setup
 
@@ -123,6 +123,7 @@ The system uses a multi-objective IK solver that optimizes:
 - **Manipulability**: Avoids singular configurations for better control
 - **Neutral Pose Distance**: Keeps joints close to comfortable positions  
 - **Current Pose Distance**: Minimizes joint motion for smooth transitions
+- **Base Stabilization**: Heavily penalizes base joint movement (joints 0,1) for improved stability
 
 ### Trajectory Generation (Ruckig)
 - **Time-optimal trajectories**: Fastest motion within kinematic constraints
