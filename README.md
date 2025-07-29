@@ -4,8 +4,8 @@ This system enables high-performance VR teleoperation of a Franka robot using ad
 
 Meta Quest VR App @ [this repo](https://github.com/wengmister/quest-wrist-tracker)
 
-<a href="https://www.youtube.com/watch?v=frbWxZRa01E" target="_blank">
-  <img src="https://img.youtube.com/vi/frbWxZRa01E/maxresdefault.jpg" alt="Demo Video" width="560">
+<a href="https://www.youtube.com/embed/zSQQ5LxgFGo?si=zg_xzxWG-oeq02WC" target="_blank">
+  <img src="https://img.youtube.com/vi/zSQQ5LxgFGo/maxresdefault.jpg" alt="Demo Video" width="560">
 </a>
 
 ## Architecture
@@ -20,7 +20,7 @@ VR Headset → UDP → ROS2 Workstation → UDP → VR Robot Client (Realtime PC
 1. **VR Headset**: Streams hand tracking data via UDP (port 8888)
 2. **ROS2 Node**: Wrist vector visualization, frame conversion, and input data smoothing.
 3. **VR Robot Client**: Real-time system with kinematic motion control:
-   - **Weighted IK**: Optimizes joint configurations for manipulability, smoothness, and base stability. This is a custom implementation adapted from [PC Lopez-Custodio et al.'s amazing work, GeoFIK](https://github.com/PabloLopezCustodio/GeoFIK).
+   - **Weighted IK**: Optimizes joint configurations for manipulability, smoothness, and base stability. This is an implementation adapted from [PC Lopez-Custodio et al.'s amazing work, GeoFIK](https://github.com/PabloLopezCustodio/GeoFIK).
    - **Ruckig Trajectory Generator**: Provides jerk-limited, time-optimal motion profiles 
    - **Joint-Space Velocity Control**: Direct velocity commands for responsive control
    - **Real-time Processing**: 1kHz control loop with <1ms trajectory calculations
@@ -47,7 +47,7 @@ vr_robot_client/
 │   └── weighted_ik.h      # Weighted IK solver with optimization and stabilization
 ├── src/
 │   ├── examples_common.cpp
-│   ├── geofik.cpp         # Franka kinematic functions
+│   ├── geofik.cpp         # Franka analytical IK
 │   ├── weighted_ik.cpp    # Multi-criteria IK optimization
 │   └── franka_vr_control_client.cpp  # Main VR control system
 └── build/
@@ -122,4 +122,7 @@ ros2 launch franka_vr_teleop vr_control.launch.py
 The robot teleop will be live now!
 
 ## Demo
+
+![tele_1](https://github.com/user-attachments/assets/9d8e6402-52b3-4378-9186-89616f87d592)
+
 
