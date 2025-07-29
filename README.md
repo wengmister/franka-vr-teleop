@@ -109,7 +109,7 @@ When [bidexhand] is set to `true`, IK solver will limit the joint range of J7 to
 
 ### 2. Start VR Application
 
-Put on your VR headset and start the application that streams hand tracking data to **port 9000** on the ROS2 node.
+Put on your VR headset and start the application `arm tracker` that streams hand tracking data to the ROS2 node.
 
 ### 3. Launch ROS2 Node
 
