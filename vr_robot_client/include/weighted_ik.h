@@ -40,6 +40,9 @@ private:
     double weight_neutral_;
     double weight_current_;
     
+    // Per-joint weights for current distance calculation (for base stabilization)
+    std::array<double, 7> joint_weights_;
+    
     // Pre-computed constants
     double normalization_factor_;
     bool verbose_;
@@ -47,6 +50,7 @@ private:
     // Helper methods
     double calculate_manipulability(const std::array<std::array<double, 6>, 7>& J) const;
     double calculate_distance(const std::array<double, 7>& q1, const std::array<double, 7>& q2) const;
+    double calculate_weighted_current_distance(const std::array<double, 7>& q1, const std::array<double, 7>& q2) const;
     double compute_score(double manipulability, double neutral_dist, double current_dist) const;
     
     // Cost function for optimization
@@ -75,6 +79,7 @@ public:
         double weight_manip,
         double weight_neutral,
         double weight_current,
+        const std::array<double, 7>& joint_weights = {{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0}},
         bool verbose = true
     );
     
@@ -101,6 +106,9 @@ public:
     
     // Update weights without recreating object
     void update_weights(double weight_manip, double weight_neutral, double weight_current);
+    
+    // Update joint weights for base stabilization
+    void update_joint_weights(const std::array<double, 7>& joint_weights);
     
     // Update neutral pose (rarely needed)
     void update_neutral_pose(const std::array<double, 7>& neutral_pose);

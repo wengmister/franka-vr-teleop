@@ -284,11 +284,23 @@ public:
             }
             
             // Create IK solver with neutral pose and weights
+            // Joint weights for base stabilization: higher weights for base joints (0,1)
+            std::array<double, 7> base_joint_weights = {{
+                3.0,  // Joint 0 (base rotation) - high penalty for stability
+                3.0,  // Joint 1 (base shoulder) - high penalty for stability  
+                1.0,  // Joint 2 (elbow) - normal penalty
+                1.0,  // Joint 3 (forearm) - normal penalty
+                1.0,  // Joint 4 (wrist) - normal penalty
+                1.0,  // Joint 5 (wrist) - normal penalty
+                1.0   // Joint 6 (hand) - normal penalty
+            }};
+            
             ik_solver_ = std::make_unique<WeightedIKSolver>(
                 neutral_joint_pose_,
                 1.0,  // manipulability weight
                 0.5,  // neutral distance weight  
                 6.0,  // current distance weight - need to strongly prioritize current state
+                base_joint_weights,  // per-joint weights for base stabilization
                 false // verbose = false for real-time use
             );
             

@@ -6,11 +6,13 @@ WeightedIKSolver::WeightedIKSolver(
     double weight_manip,
     double weight_neutral,
     double weight_current,
+    const std::array<double, 7>& joint_weights,
     bool verbose
 ) : neutral_pose_(neutral_pose),
     weight_manip_(weight_manip),
     weight_neutral_(weight_neutral),
     weight_current_(weight_current),
+    joint_weights_(joint_weights),
     verbose_(verbose) {
     
     // Pre-compute normalization factor
@@ -38,6 +40,15 @@ double WeightedIKSolver::calculate_distance(const std::array<double, 7>& q1, con
     for (int j = 0; j < 7; j++) {
         double diff = q1[j] - q2[j];
         distance += diff * diff;
+    }
+    return sqrt(distance);
+}
+
+double WeightedIKSolver::calculate_weighted_current_distance(const std::array<double, 7>& q1, const std::array<double, 7>& q2) const {
+    double distance = 0.0;
+    for (int j = 0; j < 7; j++) {
+        double diff = q1[j] - q2[j];
+        distance += joint_weights_[j] * diff * diff;  // Apply per-joint weight
     }
     return sqrt(distance);
 }
@@ -106,7 +117,7 @@ WeightedIKResult WeightedIKSolver::solve_q7(
                 // Calculate metrics using current_pose parameter
                 double manipulability = calculate_manipulability(Jsols[i]);
                 double neutral_distance = calculate_distance(qsols[i], neutral_pose_);
-                double current_distance = calculate_distance(qsols[i], current_pose);
+                double current_distance = calculate_weighted_current_distance(qsols[i], current_pose);
                 double score = compute_score(manipulability, neutral_distance, current_distance);
                 
                 // Update best solution if this one is better
@@ -140,6 +151,10 @@ void WeightedIKSolver::update_weights(double weight_manip, double weight_neutral
     weight_manip_ = weight_manip;
     weight_neutral_ = weight_neutral;
     weight_current_ = weight_current;
+}
+
+void WeightedIKSolver::update_joint_weights(const std::array<double, 7>& joint_weights) {
+    joint_weights_ = joint_weights;
 }
 
 void WeightedIKSolver::update_neutral_pose(const std::array<double, 7>& neutral_pose) {
@@ -183,7 +198,7 @@ double WeightedIKSolver::evaluate_q7_cost(
             // Calculate metrics
             double manipulability = calculate_manipulability(Jsols[i]);
             double neutral_distance = calculate_distance(qsols[i], neutral_pose_);
-            double current_distance = calculate_distance(qsols[i], current_pose);
+            double current_distance = calculate_weighted_current_distance(qsols[i], current_pose);
             double score = compute_score(manipulability, neutral_distance, current_distance);
             
             // Update best score for this q7
@@ -436,7 +451,8 @@ WeightedIKResult weighted_ik_q7(
     double weight_manip, double weight_neutral, double weight_current,
     bool verbose
 ) {
-    WeightedIKSolver solver(neutral_pose, weight_manip, weight_neutral, weight_current, verbose);
+    std::array<double, 7> default_weights = {{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0}};
+    WeightedIKSolver solver(neutral_pose, weight_manip, weight_neutral, weight_current, default_weights, verbose);
     return solver.solve_q7(target_position, target_orientation, current_pose, q7_start, q7_end, step_size);
 }
 
