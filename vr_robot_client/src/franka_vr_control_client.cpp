@@ -288,7 +288,7 @@ public:
                 neutral_joint_pose_,
                 1.0,  // manipulability weight
                 0.5,  // neutral distance weight  
-                3.0,  // current distance weight - need to strongly prioritize current state
+                6.0,  // current distance weight - need to strongly prioritize current state
                 false // verbose = false for real-time use
             );
             
