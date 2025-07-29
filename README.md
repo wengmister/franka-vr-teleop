@@ -4,7 +4,9 @@ This system enables high-performance VR teleoperation of a Franka robot using ad
 
 Meta Quest VR App @ [this repo](https://github.com/wengmister/quest-wrist-tracker)
 
-[![Demo Video](https://img.youtube.com/vi/frbWxZRa01E/maxresdefault.jpg)](https://www.youtube.com/watch?v=frbWxZRa01E)
+<a href="https://www.youtube.com/watch?v=frbWxZRa01E" target="_blank">
+  <img src="https://img.youtube.com/vi/frbWxZRa01E/maxresdefault.jpg" alt="Demo Video" width="560">
+</a>
 
 ## Architecture
 
@@ -31,6 +33,7 @@ VR Headset → UDP → ROS2 Workstation → UDP → VR Robot Client (Realtime PC
 - **libfranka**: For Franka robot control. You will need a version corresponding to your firmware version.
 - **Ruckig**: For trajectory generation (`sudo apt install libruckig-dev` or build from [source](https://github.com/pantor/ruckig))
 - **Eigen3**: For linear algebra (`sudo apt install libeigen3-dev`)
+- **ROS2**: For frame conversion, data smoothing and wrist vector visualization.
 
 ### VR Robot Client Setup
 
@@ -65,6 +68,15 @@ make -j4
 - **Ruckig**: Time-optimal trajectory generation with jerk constraints
 - **geofik**: Custom geometric inverse kinematics library for Franka
 - **weighted_ik**: Multi-objective IK solver optimizing manipulability, joint limits, and base stability
+
+### ROS2 Node:
+
+```bash
+
+rosdep update && rosdep install --from-paths src --ignore-src -r -y
+
+colcon build --packages-select franka_vr_teleop
+```
 
 ### VR Headset Setup
 
