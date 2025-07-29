@@ -10,7 +10,9 @@ set(CMAKE_BUILD_TYPE Release)
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 
 # Set CMAKE_PREFIX_PATH to find your libfranka installation
-set(CMAKE_PREFIX_PATH "${CMAKE_PREFIX_PATH};$ENV{HOME}/ws/franka/install")
+# You can override this by passing -DFRANKA_INSTALL_PATH=/path/to/franka/install
+set(FRANKA_INSTALL_PATH "$ENV{HOME}/ws/franka/install" CACHE PATH "Path to Franka installation directory")
+set(CMAKE_PREFIX_PATH "${CMAKE_PREFIX_PATH};${FRANKA_INSTALL_PATH}")
 
 # Find required packages
 find_package(Franka REQUIRED)
