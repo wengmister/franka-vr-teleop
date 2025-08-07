@@ -46,8 +46,15 @@ class VRToRobotConverter(Node):
         self.smoothed_position = np.array([0.0, 0.0, 0.0])
         self.smoothed_orientation = np.array([0.0, 0.0, 0.0, 1.0])
         
+        # Fist state control
+        self.fist_state = 'open'  # 'open', 'closed', or 'unknown'
+        self.is_paused = False
+        self.paused_position = None
+        self.paused_orientation = None
+        self.resume_initial_pose = None
+        
         # VR UDP pattern matching
-        self.wrist_pattern = re.compile(r'Right wrist:, ([-\d\.]+), ([-\d\.]+), ([-\d\.]+), ([-\d\.]+), ([-\d\.]+), ([-\d\.]+), ([-\d\.]+)')
+        self.wrist_pattern = re.compile(r'Right wrist:, ([-\d\.]+), ([-\d\.]+), ([-\d\.]+), ([-\d\.]+), ([-\d\.]+), ([-\d\.]+), ([-\d\.]+), leftFist: (\w+)')
         
         # Setup VR UDP receiver
         self.vr_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -111,6 +118,10 @@ class VRToRobotConverter(Node):
                 qy = float(match.group(5))
                 qz = float(match.group(6))
                 qw = float(match.group(7))
+                fist_state = match.group(8)
+                
+                # Update fist state
+                self.fist_state = fist_state
                 
                 # Transform VR coordinates to robot coordinates
                 # VR: +x=right, +y=up, +z=forward → Robot: +x=forward, +y=left, +z=up
@@ -167,37 +178,61 @@ class VRToRobotConverter(Node):
         self.command_counter += 1
         
         try:
-            # Calculate pose difference from initial VR pose
-            vr_pos_delta = self.current_vr_pose['position'] - self.initial_vr_pose['position']
+            # Handle fist state changes for pause/resume
+            should_pause = self.fist_state == 'closed'
             
-            # Apply smoothing to position
-            self.smoothed_position = (self.smoothing_factor * self.smoothed_position + 
-                                    (1 - self.smoothing_factor) * vr_pos_delta)
-            
-            # Calculate orientation difference as relative rotation
-            initial_rot = Rotation.from_quat(self.initial_vr_pose['orientation'])
-            current_rot = Rotation.from_quat(self.current_vr_pose['orientation'])
-            relative_rot = current_rot * initial_rot.inv()
-            
-            # For orientation, interpolate quaternions using Slerp
-            target_rot = relative_rot
-            
-            # Slerp between current smoothed orientation and target orientation
-            slerp_t = 1 - self.smoothing_factor
-            current_smoothed_rot = Rotation.from_quat(self.smoothed_orientation)
-            key_rotations = Rotation.from_quat([current_smoothed_rot.as_quat(), target_rot.as_quat()])
-            slerp = Slerp([0, 1], key_rotations)
-            smoothed_rot = slerp(slerp_t)
-            self.smoothed_orientation = smoothed_rot.as_quat()
-            
-            # Normalize quaternion to ensure it remains a unit quaternion
-            self.smoothed_orientation = self.smoothed_orientation / np.linalg.norm(self.smoothed_orientation)
-            
-            # Calculate absolute target pose (base + delta)
-            target_position = self.robot_base_pose['position'] + self.smoothed_position
-            
-            # Since base orientation is identity quaternion, we can directly use the smoothed relative orientation
-            target_orientation = self.smoothed_orientation
+            if should_pause and not self.is_paused:
+                # Transition to paused state
+                self.is_paused = True
+                self.paused_position = self.smoothed_position.copy()
+                self.paused_orientation = self.smoothed_orientation.copy()
+                self.get_logger().info("Paused differential updates (fist closed)")
+                
+            elif not should_pause and self.is_paused:
+                # Transition from paused to active state
+                self.is_paused = False
+                # Set new initial VR pose for resumed operation
+                self.resume_initial_pose = self.current_vr_pose.copy()
+                self.get_logger().info("Resumed differential updates (fist open)")
+                
+            # If paused, continue using the paused position/orientation
+            if self.is_paused:
+                target_position = self.robot_base_pose['position'] + self.paused_position
+                target_orientation = self.paused_orientation
+            else:
+                # Use resume initial pose if we just resumed, otherwise use original initial pose
+                reference_pose = self.resume_initial_pose if self.resume_initial_pose is not None else self.initial_vr_pose
+                # Calculate pose difference from reference VR pose
+                vr_pos_delta = self.current_vr_pose['position'] - reference_pose['position']
+                
+                # Apply smoothing to position
+                self.smoothed_position = (self.smoothing_factor * self.smoothed_position + 
+                                        (1 - self.smoothing_factor) * vr_pos_delta)
+                
+                # Calculate orientation difference as relative rotation
+                initial_rot = Rotation.from_quat(reference_pose['orientation'])
+                current_rot = Rotation.from_quat(self.current_vr_pose['orientation'])
+                relative_rot = current_rot * initial_rot.inv()
+                
+                # For orientation, interpolate quaternions using Slerp
+                target_rot = relative_rot
+                
+                # Slerp between current smoothed orientation and target orientation
+                slerp_t = 1 - self.smoothing_factor
+                current_smoothed_rot = Rotation.from_quat(self.smoothed_orientation)
+                key_rotations = Rotation.from_quat([current_smoothed_rot.as_quat(), target_rot.as_quat()])
+                slerp = Slerp([0, 1], key_rotations)
+                smoothed_rot = slerp(slerp_t)
+                self.smoothed_orientation = smoothed_rot.as_quat()
+                
+                # Normalize quaternion to ensure it remains a unit quaternion
+                self.smoothed_orientation = self.smoothed_orientation / np.linalg.norm(self.smoothed_orientation)
+                
+                # Calculate absolute target pose (base + delta)
+                target_position = self.robot_base_pose['position'] + self.smoothed_position
+                
+                # Since base orientation is identity quaternion, we can directly use the smoothed relative orientation
+                target_orientation = self.smoothed_orientation
             
             # Send robot command
             self.send_robot_command(target_position, target_orientation)
@@ -210,8 +245,9 @@ class VRToRobotConverter(Node):
             if current_time - self.last_log_time >= self.log_interval:
                 command_frequency = self.commands_sent / (current_time - self.last_log_time)
                 vr_frequency = self.vr_messages_received / (current_time - self.last_log_time)
+                pause_status = "PAUSED" if self.is_paused else "ACTIVE"
                 self.get_logger().info(
-                    f'VR UDP sampling: {vr_frequency:.1f} Hz | '
+                    f'VR UDP sampling: {vr_frequency:.1f} Hz | Fist: {self.fist_state} ({pause_status}) | '
                     f'Target pos: [{target_position[0]:.3f}, {target_position[1]:.3f}, {target_position[2]:.3f}] | '
                     f'VR delta: [{self.smoothed_position[0]:.3f}, {self.smoothed_position[1]:.3f}, {self.smoothed_position[2]:.3f}]'
                 )

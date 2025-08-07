@@ -1,80 +1,85 @@
-#!/usr/bin/env python3
-# test_udp_server.py - Fake robot controller to test UDP communication
-
 import socket
-import sys
 import time
+import threading
+from datetime import datetime
 
-class FakeRobotController:
-    def __init__(self, port=9000):
+class UDPReceiver:
+    def __init__(self, host='localhost', port=9000):
+        self.host = host
         self.port = port
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind(('', port))
-        self.sock.settimeout(1.0)  # 1 second timeout
+        self.socket = None
+        self.running = False
+        self.message_count = 0
+        self.last_second = time.time()
+        self.messages_per_second = 0
         
-        print(f"🤖 Fake Robot Controller listening on port {port}")
-        print("Waiting for joystick commands...")
-        print("Press Ctrl+C to stop")
-        print("-" * 60)
-        
-    def run(self):
+    def start(self):
+        """Start the UDP receiver"""
         try:
-            while True:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.socket.bind((self.host, self.port))
+            self.running = True
+            
+            print(f"UDP Receiver started on {self.host}:{self.port}")
+            print("Waiting for messages...")
+            
+            # Start stats reporting thread
+            stats_thread = threading.Thread(target=self._report_stats)
+            stats_thread.daemon = True
+            stats_thread.start()
+            
+            while self.running:
                 try:
-                    data, addr = self.sock.recvfrom(1024)
-                    command = data.decode().strip()
+                    # Receive data
+                    data, addr = self.socket.recvfrom(1024)
                     
-                    # Parse the command
-                    parts = command.split()
-                    if len(parts) == 8:
-                        lx, ly, lz, ax, ay, az, estop, reset = map(float, parts)
-                        
-                        # Format output nicely
-                        timestamp = time.strftime("%H:%M:%S")
-                        print(f"[{timestamp}] From {addr[0]}:{addr[1]}")
-                        print(f"  Linear:  X={lx:6.2f}  Y={ly:6.2f}  Z={lz:6.2f}")
-                        print(f"  Angular: X={ax:6.2f}  Y={ay:6.2f}  Z={az:6.2f}")
-                        
-                        if estop:
-                            print("  🛑 EMERGENCY STOP ACTIVATED!")
-                        if reset:
-                            print("  🔄 POSE RESET REQUESTED")
-                            
-                        # Show movement interpretation
-                        movements = []
-                        if abs(lx) > 0.01:
-                            movements.append(f"{'Right' if lx > 0 else 'Left'} ({abs(lx):.2f})")
-                        if abs(ly) > 0.01:
-                            movements.append(f"{'Forward' if ly > 0 else 'Back'} ({abs(ly):.2f})")
-                        if abs(lz) > 0.01:
-                            movements.append(f"{'Up' if lz > 0 else 'Down'} ({abs(lz):.2f})")
-                        if abs(az) > 0.01:
-                            movements.append(f"Rotate {'CCW' if az > 0 else 'CW'} ({abs(az):.2f})")
-                        if abs(ax) > 0.01:
-                            movements.append(f"Roll {'Left' if ax > 0 else 'Right'} ({abs(ax):.2f})")
-                            
-                        if movements:
-                            print(f"  🎯 Movement: {', '.join(movements)}")
-                        else:
-                            print("  ⏸️  No movement")
-                            
-                        print("-" * 60)
-                    else:
-                        print(f"❌ Invalid command format: {command}")
-                        
+                    # Log the message
+                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+                    message = data.decode('utf-8', errors='ignore')
+                    print(f"[{timestamp}] From {addr}: {message}")
+                    
+                    # Update message count
+                    self.message_count += 1
+                    
                 except socket.timeout:
-                    # No data received, continue listening
                     continue
-                    
-        except KeyboardInterrupt:
-            print("\n👋 Shutting down fake robot controller...")
+                except Exception as e:
+                    if self.running:
+                        print(f"Error receiving data: {e}")
+                        
+        except Exception as e:
+            print(f"Error starting UDP receiver: {e}")
         finally:
-            self.sock.close()
+            self.stop()
+    
+    def _report_stats(self):
+        """Report messages per second in a separate thread"""
+        while self.running:
+            time.sleep(1)
+            current_time = time.time()
+            
+            if current_time - self.last_second >= 1.0:
+                self.messages_per_second = self.message_count
+                print(f"[STATS] Messages/sec: {self.messages_per_second}, Total: {self.message_count}")
+                self.message_count = 0
+                self.last_second = current_time
+    
+    def stop(self):
+        """Stop the UDP receiver"""
+        self.running = False
+        if self.socket:
+            self.socket.close()
+        print("UDP Receiver stopped")
 
-if __name__ == '__main__':
-    port = 9000
-    if len(sys.argv) > 1:
-        port = int(sys.argv[1])
-        
-    controller = FakeRobotController(port)
-    controller.run()
+if __name__ == "__main__":
+    # Configuration
+    HOST = '0.0.0.0'  # Change to '0.0.0.0' to listen on all interfaces
+    PORT = 9000         # Change to your desired port
+    
+    receiver = UDPReceiver(HOST, PORT)
+    
+    try:
+        receiver.start()
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+        receiver.stop()
