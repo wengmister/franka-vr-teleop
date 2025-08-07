@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>franka_vr_teleop</name>
-  <version>0.1.0</version>
+  <version>0.2.0</version>
   <description>Teleoperating franka FER with quest 3s</description>
   <maintainer email="wengmister@gmail.com">Zhengyang Kris Weng</maintainer>
   <license>MIT</license>
@@ -11,9 +11,6 @@
   <depend>geometry_msgs</depend>
   <depend>python3-numpy</depend>
   <depend>python3-scipy</depend>
-
-  <exec_depend>python3-numpy</exec_depend>
-  <exec_depend>python3-scipy</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
