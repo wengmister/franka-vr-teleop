@@ -22,6 +22,7 @@ class VRToRobotConverter(Node):
         self.declare_parameter('robot_udp_port', 8888)
         self.declare_parameter('smoothing_factor', 0.7)
         self.declare_parameter('control_rate', 100.0)  # Hz
+        self.declare_parameter('pause_enabled', False)
         
         # Get parameters
         self.vr_udp_ip = self.get_parameter('vr_udp_ip').value
@@ -30,6 +31,7 @@ class VRToRobotConverter(Node):
         self.robot_udp_port = self.get_parameter('robot_udp_port').value
         self.smoothing_factor = self.get_parameter('smoothing_factor').value
         self.control_rate = self.get_parameter('control_rate').value
+        self.pause_enabled = self.get_parameter('pause_enabled').value
         
         # VR state
         self.current_vr_pose = None
@@ -183,32 +185,68 @@ class VRToRobotConverter(Node):
         self.command_counter += 1
         
         try:
-            # Handle fist state changes for pause/resume
-            should_pause = self.fist_state == 'closed'
-            
-            if should_pause and not self.is_paused:
-                # Transition to paused state
-                self.is_paused = True
-                self.paused_vr_pose['position'] = self.target_position.copy()
-                self.paused_vr_pose['orientation'] = self.target_orientation.copy()
-
-                self.get_logger().info("Paused differential updates (fist closed)")
+            # Handle fist state changes for pause/resume (only if pause is enabled)
+            if self.pause_enabled:
+                should_pause = self.fist_state == 'closed'
                 
-            elif not should_pause and self.is_paused:
-                # Transition from paused to active state
-                self.is_paused = False
+                if should_pause and not self.is_paused:
+                    # Transition to paused state
+                    self.is_paused = True
+                    self.paused_vr_pose['position'] = self.target_position.copy()
+                    self.paused_vr_pose['orientation'] = self.target_orientation.copy()
 
-                # Upon releasing, record the new initial pose
-                self.initial_vr_pose = self.current_vr_pose.copy()
-                self.get_logger().info("Resumed differential updates (fist open)")
-                
-            # If paused, continue using the paused position/orientation
-            if self.is_paused:
-                self.target_position = self.paused_vr_pose['position']
-                self.target_orientation = self.paused_vr_pose['orientation']
+                    self.get_logger().info("Paused differential updates (fist closed)")
+                    
+                elif not should_pause and self.is_paused:
+                    # Transition from paused to active state
+                    self.is_paused = False
+
+                    # Upon releasing, record the new initial pose
+                    self.initial_vr_pose = self.current_vr_pose.copy()
+                    self.get_logger().info("Resumed differential updates (fist open)")
+                    
+                # If paused, continue using the paused position/orientation
+                if self.is_paused:
+                    self.target_position = self.paused_vr_pose['position']
+                    self.target_orientation = self.paused_vr_pose['orientation']
+                else:
+                    # Calculate pose difference from reference VR pose
+                    vr_pos_delta = self.current_vr_pose['position'] - self.initial_vr_pose['position'] +  self.paused_vr_pose['position']
+                    
+                    # Apply smoothing to position
+                    self.smoothed_position = (self.smoothing_factor * self.smoothed_position + 
+                                            (1 - self.smoothing_factor) * vr_pos_delta)
+                    
+                    # Calculate orientation difference as relative rotation
+                    initial_rot = Rotation.from_quat(self.initial_vr_pose['orientation'])
+                    current_rot = Rotation.from_quat(self.current_vr_pose['orientation'])
+                    # Calculate relative rotation from initial to current
+                    relative_rot = current_rot * initial_rot.inv()
+
+                    # Apply relative rotation from paused VR pose
+                    paused_rot = Rotation.from_quat(self.paused_vr_pose['orientation'])
+                    target_rot = paused_rot * relative_rot
+                    
+                    # Slerp between current smoothed orientation and target orientation
+                    slerp_t = 1 - self.smoothing_factor
+                    current_smoothed_rot = Rotation.from_quat(self.smoothed_orientation)
+                    key_rotations = Rotation.from_quat([current_smoothed_rot.as_quat(), target_rot.as_quat()])
+                    slerp = Slerp([0, 1], key_rotations)
+                    smoothed_rot = slerp(slerp_t)
+                    self.smoothed_orientation = smoothed_rot.as_quat()
+                    
+                    # Normalize quaternion to ensure it remains a unit quaternion
+                    self.smoothed_orientation = self.smoothed_orientation / np.linalg.norm(self.smoothed_orientation)
+                    
+                    # Calculate absolute target pose (base + delta)
+                    self.target_position = self.robot_base_pose['position'] + self.smoothed_position
+                    
+                    # Since base orientation is identity quaternion, we can directly use the smoothed relative orientation
+                    self.target_orientation = self.smoothed_orientation
             else:
+                # Pause disabled - always do normal differential calculation
                 # Calculate pose difference from reference VR pose
-                vr_pos_delta = self.current_vr_pose['position'] - self.initial_vr_pose['position'] +  self.paused_vr_pose['position']
+                vr_pos_delta = self.current_vr_pose['position'] - self.initial_vr_pose['position']
                 
                 # Apply smoothing to position
                 self.smoothed_position = (self.smoothing_factor * self.smoothed_position + 
@@ -219,18 +257,11 @@ class VRToRobotConverter(Node):
                 current_rot = Rotation.from_quat(self.current_vr_pose['orientation'])
                 # Calculate relative rotation from initial to current
                 relative_rot = current_rot * initial_rot.inv()
-
-                # Apply relative rotation from paused VR pose
-                paused_rot = Rotation.from_quat(self.paused_vr_pose['orientation'])
-                relative_rot = relative_rot * paused_rot.inv()
-                
-                # For orientation, interpolate quaternions using Slerp
-                target_rot = relative_rot
                 
                 # Slerp between current smoothed orientation and target orientation
                 slerp_t = 1 - self.smoothing_factor
                 current_smoothed_rot = Rotation.from_quat(self.smoothed_orientation)
-                key_rotations = Rotation.from_quat([current_smoothed_rot.as_quat(), target_rot.as_quat()])
+                key_rotations = Rotation.from_quat([current_smoothed_rot.as_quat(), relative_rot.as_quat()])
                 slerp = Slerp([0, 1], key_rotations)
                 smoothed_rot = slerp(slerp_t)
                 self.smoothed_orientation = smoothed_rot.as_quat()
@@ -253,11 +284,14 @@ class VRToRobotConverter(Node):
             # Frequency logging
             current_time = time.time()
             if current_time - self.last_log_time >= self.log_interval:
-                command_frequency = self.commands_sent / (current_time - self.last_log_time)
                 vr_frequency = self.vr_messages_received / (current_time - self.last_log_time)
-                pause_status = "PAUSED" if self.is_paused else "ACTIVE"
+                if self.pause_enabled:
+                    pause_status = "PAUSED" if self.is_paused else "ACTIVE"
+                    fist_info = f'Fist: {self.fist_state} ({pause_status})'
+                else:
+                    fist_info = 'Pause: DISABLED'
                 self.get_logger().info(
-                    f'VR UDP sampling: {vr_frequency:.1f} Hz | Fist: {self.fist_state} ({pause_status}) | '
+                    f'VR UDP sampling: {vr_frequency:.1f} Hz | {fist_info} | '
                     f'Target pos: [{self.target_position[0]:.3f}, {self.target_position[1]:.3f}, {self.target_position[2]:.3f}] | '
                     f'VR delta: [{self.smoothed_position[0]:.3f}, {self.smoothed_position[1]:.3f}, {self.smoothed_position[2]:.3f}]'
                 )
