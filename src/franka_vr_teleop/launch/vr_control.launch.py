@@ -55,6 +55,12 @@ def generate_launch_description():
         description='Default smoothing factor'
     )
 
+    pause_enabled_arg = DeclareLaunchArgument(
+        'pause_enabled',
+        default_value='false',
+        description='Enable pause functionality using fist gesture'
+    )
+
     # VR to Robot converter node
     vr_converter_node = Node(
         package='franka_vr_teleop',
@@ -68,6 +74,7 @@ def generate_launch_description():
             'position_deadzone': LaunchConfiguration('position_deadzone'),
             'orientation_deadzone': LaunchConfiguration('orientation_deadzone'),
             'smoothing_factor': LaunchConfiguration('smoothing_factor'),
+            'pause_enabled': LaunchConfiguration('pause_enabled'),
             'control_rate': 50.0,
         }],
         output='screen'
@@ -90,6 +97,7 @@ def generate_launch_description():
         position_deadzone_arg,
         orientation_deadzone_arg,
         smoothing_factor_arg,
+        pause_enabled_arg,
         vr_converter_node,
         rviz_node,
     ])
