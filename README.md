@@ -15,11 +15,14 @@ Meta Quest VR App @ [this repo](https://github.com/wengmister/quest-wrist-tracke
 
 v1.2:
 - Added `pause` mode:
-  - Allows user to pause and reposition while left fist is clenched.
+  - Allows user to pause and reposition while left fist is clenched. 
   - Output commmand will restart from the paused position upon fist release.
   - added launch arg `pause_enabled = false`. When set to `true`, enabls pause mode.
 - `pause` mode requires updated app under `dex-retargeter` branch on the vr repo.
 - **important** - VR wolrd frame has an origin, when crossing the origin while app is open will cause the coordinates to be mirrored. Remember to reset world frame by holding down meta menu (pinching thumb and index while the menu button is invoked)
+
+![pause-mode](https://github.com/user-attachments/assets/098eda9c-c8d4-412d-b3ba-da21509b5772)
+
 
 v1.1:
 - Updated IK algorithm with Brent's method based 1d-optimization
