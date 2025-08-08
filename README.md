@@ -13,6 +13,15 @@ Meta Quest VR App @ [this repo](https://github.com/wengmister/quest-wrist-tracke
 <details>
 <summary>Click to expand changelog</summary>
 
+v1.3:
+- Added support for TCP data streaming via `adb`. 
+  - Added subprocess call to automatically setup `adb reverse` on assigned port
+  - See `tcp_vr_control.launch.py` launchfile for more detail on added TCP launch args
+- Data streaming via USB is a lot more efficient compared to WiFi, therefore the tracking frequency bottleneck is the device hand tracking capability now. 
+  - My quest 3s tracks hand and streams at around 65Hz, which is a lot higher than ~20Hz when streamed via UDP over wifi.
+  - You can therefore use a lot smoother parameters for alpha-beta filtering on `smoothing factor` (defaults to 0.05 for TCP launchfile)
+
+
 v1.2:
 - Added `pause` mode:
   - Allows user to pause and reposition while left fist is clenched. 
