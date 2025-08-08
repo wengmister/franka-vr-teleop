@@ -6,7 +6,10 @@ from rclpy.node import Node
 import socket
 import threading
 import time
+import sys
+import select
 import re
+import subprocess
 import numpy as np
 from scipy.spatial.transform import Rotation, Slerp
 from geometry_msgs.msg import PoseStamped
@@ -16,6 +19,8 @@ class VRToRobotConverter(Node):
         super().__init__('vr_to_robot_converter')
         
         # Parameters
+        self.declare_parameter('use_tcp', False)
+        self.declare_parameter('vr_tcp_port', 8000)
         self.declare_parameter('vr_udp_ip', '0.0.0.0')
         self.declare_parameter('vr_udp_port', 9999)
         self.declare_parameter('robot_udp_ip', '192.168.18.1')
@@ -25,6 +30,8 @@ class VRToRobotConverter(Node):
         self.declare_parameter('pause_enabled', False)
         
         # Get parameters
+        self.use_tcp = self.get_parameter('use_tcp').value
+        self.vr_tcp_port = self.get_parameter('vr_tcp_port').value
         self.vr_udp_ip = self.get_parameter('vr_udp_ip').value
         self.vr_udp_port = self.get_parameter('vr_udp_port').value
         self.robot_udp_ip = self.get_parameter('robot_udp_ip').value
@@ -63,16 +70,48 @@ class VRToRobotConverter(Node):
         # VR UDP pattern matching
         self.wrist_pattern = re.compile(r'Right wrist:, ([-\d\.]+), ([-\d\.]+), ([-\d\.]+), ([-\d\.]+), ([-\d\.]+), ([-\d\.]+), ([-\d\.]+), leftFist: (\w+)')
         
-        # Setup VR UDP receiver
-        self.vr_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.vr_socket.bind((self.vr_udp_ip, self.vr_udp_port))
-        self.vr_socket.setblocking(False)
+        # TCP-specific state
+        self.tcp_socket = None
+        self.tcp_connection = None
+        self.tcp_client_address = None
+        
+        # Setup VR receiver (UDP or TCP)
+        if self.use_tcp:
+            # Setup adb reverse port forwarding first
+            if not self.setup_adb_reverse(self.vr_tcp_port):
+                self.get_logger().warn("adb reverse setup failed, but continuing with TCP socket setup")
+                self.get_logger().warn("You may need to run 'adb reverse tcp:{port} tcp:{port}' manually".format(port=self.vr_tcp_port))
+            
+            try:
+                self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.tcp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                self.tcp_socket.bind(('localhost', self.vr_tcp_port))
+                self.tcp_socket.listen(1)  # Allow one connection
+                self.get_logger().info(f"Successfully bound VR TCP socket to localhost:{self.vr_tcp_port}")
+            except Exception as e:
+                self.get_logger().error(f"Failed to setup VR TCP socket: {str(e)}")
+                # Clean up adb reverse if socket setup failed
+                self.cleanup_adb_reverse(self.vr_tcp_port)
+                raise
+        else:
+            try:
+                self.vr_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                self.vr_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                self.vr_socket.bind((self.vr_udp_ip, self.vr_udp_port))
+                self.vr_socket.setblocking(False)
+                self.get_logger().info(f"Successfully bound VR UDP socket to {self.vr_udp_ip}:{self.vr_udp_port}")
+            except Exception as e:
+                self.get_logger().error(f"Failed to setup VR UDP socket: {str(e)}")
+                raise
         
         # Setup robot UDP sender
         self.robot_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         
         # Start VR receiver thread
-        self.vr_thread = threading.Thread(target=self.receive_vr_data)
+        if self.use_tcp:
+            self.vr_thread = threading.Thread(target=self.receive_vr_data_tcp)
+        else:
+            self.vr_thread = threading.Thread(target=self.receive_vr_data)
         self.vr_thread.daemon = True
         self.vr_thread.start()
         
@@ -91,23 +130,114 @@ class VRToRobotConverter(Node):
         self.log_interval = 2.0  # Log every 2 seconds
         
         self.get_logger().info(f"VR to Robot Converter started")
-        self.get_logger().info(f"VR UDP: {self.vr_udp_ip}:{self.vr_udp_port}")
+        if self.use_tcp:
+            self.get_logger().info(f"VR TCP: localhost:{self.vr_tcp_port}")
+        else:
+            self.get_logger().info(f"VR UDP: {self.vr_udp_ip}:{self.vr_udp_port}")
         self.get_logger().info(f"Robot UDP: {self.robot_udp_ip}:{self.robot_udp_port}")
         self.get_logger().info("Move your VR hand to start control!")
+
+    def __del__(self):
+        """Cleanup resources when node is destroyed"""
+        if hasattr(self, 'use_tcp') and self.use_tcp and hasattr(self, 'vr_tcp_port'):
+            self.cleanup_adb_reverse(self.vr_tcp_port)
     
     def receive_vr_data(self):
         """Thread function to receive VR wrist tracking data"""
         self.get_logger().info('VR UDP receiver thread started')
+        last_debug_time = time.time()
+        message_count = 0
         
         while rclpy.ok():
             try:
                 data, addr = self.vr_socket.recvfrom(1024)
                 message = data.decode('utf-8')
+                message_count += 1
+                
+                # Debug logging every 5 seconds
+                current_time = time.time()
+                if current_time - last_debug_time >= 5.0:
+                    self.get_logger().info(f"Received {message_count} VR messages in last 5 seconds")
+                    self.get_logger().info(f"Latest message from {addr}: {message[:100]}...")  # First 100 chars
+                    last_debug_time = current_time
+                    message_count = 0
+                
                 self.parse_vr_message(message)
             except BlockingIOError:
+                # No data available, check for debug timeout
+                current_time = time.time()
+                if current_time - last_debug_time >= 5.0:
+                    if message_count == 0:  # Only log if truly no messages received
+                        self.get_logger().info("No VR data received in last 5 seconds")
+                    last_debug_time = current_time
+                    message_count = 0
                 time.sleep(0.001)
             except Exception as e:
                 self.get_logger().error(f'Error receiving VR data: {str(e)}')
+
+    def receive_vr_data_tcp(self):
+        """Thread function to receive VR wrist tracking data via TCP"""
+        self.get_logger().info('VR TCP receiver thread started')
+        last_debug_time = time.time()
+        message_count = 0
+        
+        while rclpy.ok():
+            try:
+                # Wait for a connection if we don't have one
+                if self.tcp_connection is None:
+                    self.get_logger().info("Waiting for TCP connection...")
+                    self.tcp_connection, self.tcp_client_address = self.tcp_socket.accept()
+                    self.tcp_connection.settimeout(1.0)  # 1 second timeout for recv
+                    self.get_logger().info(f"TCP connection established from {self.tcp_client_address}")
+
+                # Try to receive data
+                try:
+                    data = self.tcp_connection.recv(1024)
+                    if not data:
+                        # Connection closed by client
+                        self.get_logger().info("TCP client disconnected")
+                        self.tcp_connection.close()
+                        self.tcp_connection = None
+                        self.tcp_client_address = None
+                        continue
+                    
+                    message = data.decode('utf-8')
+                    message_count += 1
+                    
+                    # Debug logging every 5 seconds
+                    current_time = time.time()
+                    if current_time - last_debug_time >= 5.0:
+                        self.get_logger().info(f"Received {message_count} VR messages in last 5 seconds")
+                        self.get_logger().info(f"Latest message from {self.tcp_client_address}: {message[:100]}...")  # First 100 chars
+                        last_debug_time = current_time
+                        message_count = 0
+                    
+                    self.parse_vr_message(message)
+                    
+                except socket.timeout:
+                    # No data received within timeout, check for debug timeout
+                    current_time = time.time()
+                    if current_time - last_debug_time >= 5.0:
+                        if message_count == 0:  # Only log if truly no messages received
+                            self.get_logger().info("No VR data received in last 5 seconds")
+                        last_debug_time = current_time
+                        message_count = 0
+                    continue
+                    
+                except ConnectionResetError:
+                    self.get_logger().info("TCP connection reset by client")
+                    self.tcp_connection.close()
+                    self.tcp_connection = None
+                    self.tcp_client_address = None
+                    continue
+                    
+            except Exception as e:
+                self.get_logger().error(f'Error in TCP receiver: {str(e)}')
+                if self.tcp_connection:
+                    self.tcp_connection.close()
+                    self.tcp_connection = None
+                    self.tcp_client_address = None
+                time.sleep(1.0)  # Wait before retrying
     
     def parse_vr_message(self, message):
         """Parse VR wrist tracking message"""
@@ -172,9 +302,19 @@ class VRToRobotConverter(Node):
                 
                 # Publish VR pose for visualization
                 self.publish_vr_pose(robot_position, robot_quat)
+            else:
+                # Log messages that don't match our pattern (first few only)
+                # Skip warning for "Right landmarks" messages as they are expected but not used
+                if not message.startswith("Right landmarks"):
+                    if not hasattr(self, '_pattern_miss_count'):
+                        self._pattern_miss_count = 0
+                    if self._pattern_miss_count < 5:
+                        self.get_logger().warn(f"VR message doesn't match pattern: {message[:200]}")
+                        self._pattern_miss_count += 1
                 
         except Exception as e:
             self.get_logger().error(f'Error parsing VR message: {str(e)}')
+            self.get_logger().error(f'Problem message: {message[:200]}')
     
 
     def control_loop(self):
@@ -351,6 +491,56 @@ class VRToRobotConverter(Node):
         
         self.robot_target_pub.publish(pose_msg)
 
+    def setup_adb_reverse(self, port):
+        """Setup adb reverse port forwarding"""
+        try:
+            # First check if adb is available
+            result = subprocess.run(['adb', 'devices'], 
+                                  capture_output=True, text=True, timeout=5)
+            if result.returncode != 0:
+                self.get_logger().error("adb command not found. Please install Android SDK platform-tools.")
+                return False
+            
+            # Check if device is connected
+            if "device" not in result.stdout:
+                self.get_logger().error("No Android device connected via adb.")
+                return False
+            
+            # Setup reverse port forwarding
+            cmd = ['adb', 'reverse', f'tcp:{port}', f'tcp:{port}']
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            
+            if result.returncode == 0:
+                self.get_logger().info(f"Successfully setup adb reverse tcp:{port} tcp:{port}")
+                return True
+            else:
+                self.get_logger().error(f"Failed to setup adb reverse: {result.stderr}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            self.get_logger().error("adb command timed out")
+            return False
+        except FileNotFoundError:
+            self.get_logger().error("adb command not found. Please install Android SDK platform-tools.")
+            return False
+        except Exception as e:
+            self.get_logger().error(f"Error setting up adb reverse: {str(e)}")
+            return False
+
+    def cleanup_adb_reverse(self, port):
+        """Remove adb reverse port forwarding"""
+        try:
+            cmd = ['adb', 'reverse', '--remove', f'tcp:{port}']
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            
+            if result.returncode == 0:
+                self.get_logger().info(f"Successfully removed adb reverse tcp:{port}")
+            else:
+                self.get_logger().warn(f"Failed to remove adb reverse: {result.stderr}")
+                
+        except Exception as e:
+            self.get_logger().warn(f"Error cleaning up adb reverse: {str(e)}")
+
 def main(args=None):
     rclpy.init(args=args)
     
@@ -361,6 +551,9 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        # Clean up adb reverse if using TCP
+        if node.use_tcp:
+            node.cleanup_adb_reverse(node.vr_tcp_port)
         node.destroy_node()
         rclpy.shutdown()
 
