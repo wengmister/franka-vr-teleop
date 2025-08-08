@@ -68,6 +68,7 @@ VR Headset → UDP → ROS2 Workstation → UDP → VR Robot Client (Realtime PC
 - **Ruckig**: For trajectory generation (`sudo apt install libruckig-dev` or build from [source](https://github.com/pantor/ruckig))
 - **Eigen3**: For linear algebra (`sudo apt install libeigen3-dev`)
 - **ROS2**: For frame conversion, data smoothing and wrist vector visualization.
+- **ADB**: For deploying app .apk, and optionally stream data via USB through `adb reverse`.
 
 ### VR Robot Client Setup
 
