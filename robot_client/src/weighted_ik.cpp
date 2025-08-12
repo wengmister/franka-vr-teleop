@@ -14,9 +14,6 @@ WeightedIKSolver::WeightedIKSolver(
     weight_current_(weight_current),
     joint_weights_(joint_weights),
     verbose_(verbose) {
-    
-    // Pre-compute normalization factor
-    normalization_factor_ = 7.0 * 6.28;
 }
 
 double WeightedIKSolver::calculate_manipulability(const std::array<std::array<double, 6>, 7>& J) const {
@@ -53,99 +50,31 @@ double WeightedIKSolver::calculate_weighted_current_distance(const std::array<do
     return sqrt(distance);
 }
 
-double WeightedIKSolver::compute_score(double manipulability, double neutral_dist, double current_dist) const {
-    double normalized_neutral_dist = neutral_dist / normalization_factor_;
-    double normalized_current_dist = current_dist / normalization_factor_;
-    
-    return weight_manip_ * manipulability 
-         - weight_neutral_ * normalized_neutral_dist 
-         - weight_current_ * normalized_current_dist;
+double WeightedIKSolver::calculate_normalized_distance(const std::array<double, 7>& q1, const std::array<double, 7>& q2) const {
+    double distance = 0.0;
+    for (int j = 0; j < 7; j++) {
+        double diff = (q1[j] - q2[j]) / JOINT_RANGES[j];  // Normalize by joint range
+        distance += diff * diff;
+    }
+    return sqrt(distance);
 }
 
-WeightedIKResult WeightedIKSolver::solve_q7(
-    const std::array<double, 3>& target_position,
-    const std::array<double, 9>& target_orientation,
-    const std::array<double, 7>& current_pose,  // Now a parameter
-    double q7_start,
-    double q7_end,
-    double step_size
-) {
-    WeightedIKResult result;
-    result.success = false;
-    result.score = -std::numeric_limits<double>::infinity();
-    result.total_solutions_found = 0;
-    result.valid_solutions_count = 0;
-    result.q7_values_tested = (int)((q7_end - q7_start) / step_size) + 1;
-    
-    // Variables for IK solving
-    unsigned int nsols = 0;
-    bool joint_angles = true;
-    std::array<std::array<double, 7>, 8> qsols;
-    std::array<std::array<std::array<double, 6>, 7>, 8> Jsols;
-    
-    if (verbose_) {
-        cout << endl << "=======================================================" << endl;
-        cout << "Weighted IK Q7 Optimization (Class-based)" << endl;
-        cout << "=======================================================" << endl;
-        cout << "Target position: [" << target_position[0] << ", " << target_position[1] << ", " << target_position[2] << "]" << endl;
-        cout << "Q7 range: " << q7_start << " to " << q7_end << " rad (step: " << step_size << ")" << endl;
-        cout << "Weights - Manipulability: " << weight_manip_ << ", Neutral: " << weight_neutral_ << ", Current: " << weight_current_ << endl;
-        cout << endl;
+double WeightedIKSolver::calculate_normalized_weighted_distance(const std::array<double, 7>& q1, const std::array<double, 7>& q2) const {
+    double distance = 0.0;
+    for (int j = 0; j < 7; j++) {
+        double diff = (q1[j] - q2[j]) / JOINT_RANGES[j];  // Normalize first
+        distance += joint_weights_[j] * diff * diff;      // Then apply weights
     }
-    
-    auto start = high_resolution_clock::now();
-    
-    // Sweep through q7 values
-    for (double q7_sweep = q7_start; q7_sweep <= q7_end; q7_sweep += step_size) {
-        nsols = franka_J_ik_q7(target_position, target_orientation, q7_sweep, Jsols, qsols, joint_angles);
-        result.total_solutions_found += nsols;
-        
-        // Check each solution for this q7 value
-        for (int i = 0; i < nsols; i++) {
-            // Check if solution is valid (all joints within limits)
-            bool valid_solution = true;
-            for (int j = 0; j < 7; j++) {
-                if (isnan(qsols[i][j])) {
-                    valid_solution = false;
-                    break;
-                }
-            }
-            
-            if (valid_solution) {
-                result.valid_solutions_count++;
-                
-                // Calculate metrics using current_pose parameter
-                double manipulability = calculate_manipulability(Jsols[i]);
-                double neutral_distance = calculate_distance(qsols[i], neutral_pose_);
-                double current_distance = calculate_weighted_current_distance(qsols[i], current_pose);
-                double score = compute_score(manipulability, neutral_distance, current_distance);
-                
-                // Update best solution if this one is better
-                if (score > result.score) {
-                    result.success = true;
-                    result.score = score;
-                    result.manipulability = manipulability;
-                    result.neutral_distance = neutral_distance;
-                    result.current_distance = current_distance;
-                    result.q7_optimal = q7_sweep;
-                    result.joint_angles = qsols[i];
-                    result.jacobian = Jsols[i];
-                    result.solution_index = i;
-                }
-            }
-        }
-    }
-    
-    auto end = high_resolution_clock::now();
-    auto duration = duration_cast<microseconds>(end - start);
-    result.duration_microseconds = duration.count();
-    
-    if (verbose_) {
-        print_weighted_ik_results(result);
-    }
-    
-    return result;
+    return sqrt(distance);
 }
+
+double WeightedIKSolver::compute_score(double manipulability, double neutral_dist, double current_dist) const {
+    // Distances are now already normalized by joint ranges, so no additional normalization needed
+    return weight_manip_ * manipulability 
+         - weight_neutral_ * neutral_dist 
+         - weight_current_ * current_dist;
+}
+
 
 void WeightedIKSolver::update_weights(double weight_manip, double weight_neutral, double weight_current) {
     weight_manip_ = weight_manip;
@@ -197,8 +126,8 @@ double WeightedIKSolver::evaluate_q7_cost(
         if (valid_solution) {
             // Calculate metrics
             double manipulability = calculate_manipulability(Jsols[i]);
-            double neutral_distance = calculate_distance(qsols[i], neutral_pose_);
-            double current_distance = calculate_weighted_current_distance(qsols[i], current_pose);
+            double neutral_distance = calculate_normalized_distance(qsols[i], neutral_pose_);
+            double current_distance = calculate_normalized_weighted_distance(qsols[i], current_pose);
             double score = compute_score(manipulability, neutral_distance, current_distance);
             
             // Update best score for this q7
@@ -370,8 +299,8 @@ WeightedIKResult WeightedIKSolver::solve_q7_optimized(
                 
                 // Calculate metrics
                 double manipulability = calculate_manipulability(Jsols[i]);
-                double neutral_distance = calculate_distance(qsols[i], neutral_pose_);
-                double current_distance = calculate_distance(qsols[i], current_pose);
+                double neutral_distance = calculate_normalized_distance(qsols[i], neutral_pose_);
+                double current_distance = calculate_normalized_weighted_distance(qsols[i], current_pose);
                 double score = compute_score(manipulability, neutral_distance, current_distance);
                 
                 // Update best solution
@@ -441,20 +370,6 @@ WeightedIKResult WeightedIKSolver::solve_q7_optimized(
     return result;
 }
 
-// Keep original function for backward compatibility
-WeightedIKResult weighted_ik_q7(
-    const std::array<double, 3>& target_position,
-    const std::array<double, 9>& target_orientation,
-    const std::array<double, 7>& neutral_pose,
-    const std::array<double, 7>& current_pose,
-    double q7_start, double q7_end, double step_size,
-    double weight_manip, double weight_neutral, double weight_current,
-    bool verbose
-) {
-    std::array<double, 7> default_weights = {{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0}};
-    WeightedIKSolver solver(neutral_pose, weight_manip, weight_neutral, weight_current, default_weights, verbose);
-    return solver.solve_q7(target_position, target_orientation, current_pose, q7_start, q7_end, step_size);
-}
 
 void print_weighted_ik_results(const WeightedIKResult& result) {
     cout << "Optimization completed!" << endl;

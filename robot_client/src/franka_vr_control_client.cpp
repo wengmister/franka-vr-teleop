@@ -74,7 +74,8 @@ private:
     // Q7 limits
     double Q7_MIN;
     double Q7_MAX;
-    static constexpr double Q7_SEARCH_RANGE = 0.25; // look for q7 angle candidates in +/- this value in the current joint range 
+    bool bidexhand_;
+    static constexpr double Q7_SEARCH_RANGE = 0.5; // look for q7 angle candidates in +/- this value in the current joint range 
     static constexpr double Q7_OPTIMIZATION_TOLERANCE = 1e-6; // Tolerance for optimization
     static constexpr int Q7_MAX_ITERATIONS = 100; // Max iterations for optimization
 
@@ -96,7 +97,7 @@ private:
 
 public:
     VRController(bool bidexhand = true)
-        : Q7_MIN(bidexhand ? -0.2 : -2.89), Q7_MAX(bidexhand ? 1.9 : 2.89)
+        : Q7_MIN(bidexhand ? -0.2 : -2.89), Q7_MAX(bidexhand ? 1.9 : 2.89), bidexhand_(bidexhand)
     {
         setupNetworking();
     }
@@ -248,13 +249,12 @@ public:
             setDefaultBehavior(robot);
 
             // Move to a suitable starting joint configuration
-            std::array<double, 7> q_goal = {{0.0,
-                                             -0.812,
-                                             -0.123,
-                                             -2.0,
-                                             0.0,
-                                             2.8,
-                                             0.9}};
+            std::array<double, 7> q_goal;
+            if (bidexhand_) {
+                q_goal = {{0.0, -0.812, -0.123, -2.0, 0.0, 2.8, 0.9}};  // BiDexHand pose
+            } else {
+                q_goal = {{0.0, -0.48, 0.0, -2.0, 0.0, 1.57, -0.85}};   // Full range pose
+            }
             MotionGenerator motion_generator(0.5, q_goal);
             std::cout << "WARNING: This example will move the robot! "
                       << "Please make sure to have the user stop button at hand!" << std::endl
@@ -287,9 +287,9 @@ public:
             // Joint weights for base stabilization: higher weights for base joints (0,1)
             std::array<double, 7> base_joint_weights = {{
                 3.0,  // Joint 0 (base rotation) - high penalty for stability
-                3.0,  // Joint 1 (base shoulder) - high penalty for stability  
-                1.0,  // Joint 2 (elbow) - normal penalty
-                1.0,  // Joint 3 (forearm) - normal penalty
+                6.0,  // Joint 1 (base shoulder) - high penalty for stability  
+                1.5,  // Joint 2 (elbow) - normal penalty
+                1.5,  // Joint 3 (forearm) - normal penalty
                 1.0,  // Joint 4 (wrist) - normal penalty
                 1.0,  // Joint 5 (wrist) - normal penalty
                 1.0   // Joint 6 (hand) - normal penalty
@@ -298,10 +298,10 @@ public:
             ik_solver_ = std::make_unique<WeightedIKSolver>(
                 neutral_joint_pose_,
                 1.0,  // manipulability weight
-                0.5,  // neutral distance weight  
-                6.0,  // current distance weight - need to strongly prioritize current state
+                2.0,  // neutral distance weight  
+                2.0,  // current distance weight
                 base_joint_weights,  // per-joint weights for base stabilization
-                false // verbose = false for real-time use
+                false // verbose = false for production use
             );
             
             // Initialize Ruckig trajectory generator (but don't set initial state yet)
@@ -398,8 +398,9 @@ private:
             
             // Calculate q7 search range around current value
             double current_q7 = current_joint_angles_[6];
-            double q7_start = std::max(Q7_MIN, current_q7 - Q7_SEARCH_RANGE);
-            double q7_end = std::min(Q7_MAX, current_q7 + Q7_SEARCH_RANGE);
+            // Use full Franka Q7 range for IK solving, not bidexhand limits
+            double q7_start = std::max(-2.89, current_q7 - Q7_SEARCH_RANGE);
+            double q7_end = std::min(2.89, current_q7 + Q7_SEARCH_RANGE);
             
             // Solve IK with weighted optimization
             WeightedIKResult ik_result = ik_solver_->solve_q7_optimized(
@@ -410,9 +411,14 @@ private:
             // Debug output for velocity control
             static int debug_counter = 0;
             debug_counter++;
-            if (debug_counter <= 5 || debug_counter % 100 == 0) {
-                std::cout << "Cycle " << debug_counter << ": Activation: " << std::fixed << std::setprecision(3) << activation_factor 
-                          << ", IK success: " << (ik_result.success ? "yes" : "no") << std::endl;
+            
+            if (debug_counter % 100 == 0) {
+                std::cout << "IK: " << (ik_result.success ? "\033[32msuccess\033[0m" : "\033[31mfail\033[0m") << " | Joints: ";
+                for (int i = 0; i < 7; i++) {
+                    std::cout << std::fixed << std::setprecision(2) << current_joint_angles_[i];
+                    if (i < 6) std::cout << " ";
+                }
+                std::cout << std::endl;
             }
             
             // Set Ruckig targets based on IK solution and gradual activation
@@ -486,7 +492,7 @@ int main(int argc, char **argv)
         return -1;
     }
 
-    bool bidexhand = true;
+    bool bidexhand = false;
     if (argc == 3)
     {
         std::string bidexhand_arg = argv[2];

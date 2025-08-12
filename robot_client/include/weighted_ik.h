@@ -34,6 +34,17 @@ struct WeightedIKResult {
 
 class WeightedIKSolver {
 private:
+    // Franka joint ranges (radians) based on datasheet limits
+    static constexpr std::array<double, 7> JOINT_RANGES = {{
+        5.796,  // A1: [-166°, 166°] = [-2.898, 2.898] rad
+        3.524,  // A2: [-101°, 101°] = [-1.762, 1.762] rad  
+        5.796,  // A3: [-166°, 166°] = [-2.898, 2.898] rad
+        3.001,  // A4: [-176°, -4°] = [-3.071, -0.070] rad
+        5.796,  // A5: [-166°, 166°] = [-2.898, 2.898] rad
+        3.769,  // A6: [-1°, 215°] = [-0.017, 3.752] rad
+        5.796   // A7: [-166°, 166°] = [-2.898, 2.898] rad
+    }};
+
     // Pre-configured parameters (robot-specific, don't change)
     std::array<double, 7> neutral_pose_;
     double weight_manip_;
@@ -43,14 +54,14 @@ private:
     // Per-joint weights for current distance calculation (for base stabilization)
     std::array<double, 7> joint_weights_;
     
-    // Pre-computed constants
-    double normalization_factor_;
     bool verbose_;
     
     // Helper methods
     double calculate_manipulability(const std::array<std::array<double, 6>, 7>& J) const;
     double calculate_distance(const std::array<double, 7>& q1, const std::array<double, 7>& q2) const;
     double calculate_weighted_current_distance(const std::array<double, 7>& q1, const std::array<double, 7>& q2) const;
+    double calculate_normalized_distance(const std::array<double, 7>& q1, const std::array<double, 7>& q2) const;
+    double calculate_normalized_weighted_distance(const std::array<double, 7>& q1, const std::array<double, 7>& q2) const;
     double compute_score(double manipulability, double neutral_dist, double current_dist) const;
     
     // Cost function for optimization
@@ -83,17 +94,7 @@ public:
         bool verbose = true
     );
     
-    // Main solving method - current_pose is passed in as it changes with robot motion
-    WeightedIKResult solve_q7(
-        const std::array<double, 3>& target_position,
-        const std::array<double, 9>& target_orientation,
-        const std::array<double, 7>& current_pose,  // Current robot state
-        double q7_start,
-        double q7_end,
-        double step_size
-    );
-    
-    // Optimized solving method using 1D optimization instead of grid search
+    // Main solving method using 1D optimization
     WeightedIKResult solve_q7_optimized(
         const std::array<double, 3>& target_position,
         const std::array<double, 9>& target_orientation,
@@ -118,17 +119,5 @@ public:
     void set_verbose(bool verbose) { verbose_ = verbose; }
 };
 
-// Standalone functions for backward compatibility
-double calculate_manipulability_weighted(const std::array<std::array<double, 6>, 7>& J);
-WeightedIKResult weighted_ik_q7(
-    const std::array<double, 3>& target_position,
-    const std::array<double, 9>& target_orientation,
-    const std::array<double, 7>& neutral_pose,
-    const std::array<double, 7>& current_pose,
-    double q7_start, double q7_end, double step_size,
-    double weight_manip, double weight_neutral, double weight_current,
-    bool verbose = true
-);
-void print_weighted_ik_results(const WeightedIKResult& result);
 
 #endif // WEIGHTED_IK_H
