@@ -160,4 +160,15 @@ The robot teleop will be live now!
 
 ![tele_1](https://github.com/user-attachments/assets/9d8e6402-52b3-4378-9186-89616f87d592)
 
+## Citation
+If you find this work helpful, please consider citing as:
 
+      @misc{weng2025levr,
+            title={LeVR: A Modular VR Teleoperation Framework for Imitation Learning in Dexterous Manipulation}, 
+            author={Zhengyang Kris Weng and Matthew L. Elwin and Han Liu},
+            year={2025},
+            eprint={2509.14349},
+            archivePrefix={arXiv},
+            primaryClass={cs.RO},
+            url={https://arxiv.org/abs/2509.14349}, 
+      }
